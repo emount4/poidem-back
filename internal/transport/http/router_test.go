@@ -2,7 +2,9 @@ package http
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +16,7 @@ import (
 
 func TestHealth(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs))
+	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if response.Code != http.StatusOK || response.Body.String() != `{"status":"ok"}` {
@@ -31,7 +33,7 @@ func TestHealth(t *testing.T) {
 
 func TestRecovery(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs))
+	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
 	router.GET("/panic", func(c *gin.Context) { panic("test panic") })
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/panic", nil))
@@ -54,5 +56,34 @@ func TestRecovery(t *testing.T) {
 	}
 	if requestLog["status"] != float64(http.StatusInternalServerError) || requestLog["level"] != "ERROR" {
 		t.Fatalf("unexpected request log: %v", requestLog)
+	}
+}
+
+func TestReadiness(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{"database available", nil, http.StatusOK},
+		{"database unavailable", errors.New("connection refused"), http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			router := NewRouter(logger.New(&logs), func(ctx context.Context) error {
+				if _, ok := ctx.Deadline(); !ok {
+					t.Error("database readiness check must have a timeout")
+				}
+				return tc.err
+			})
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ready", nil))
+			if response.Code != tc.status {
+				t.Fatalf("status = %d, want %d", response.Code, tc.status)
+			}
+			if strings.Contains(response.Body.String(), "connection refused") {
+				t.Fatal("readiness response exposes internal database error")
+			}
+		})
 	}
 }

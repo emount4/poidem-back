@@ -11,19 +11,27 @@ import (
 	"time"
 
 	"github.com/emount4/poidem-back/internal/config"
+	"github.com/emount4/poidem-back/internal/database/postgres"
 	httptransport "github.com/emount4/poidem-back/internal/transport/http"
 	"github.com/gin-gonic/gin"
 )
 
 func Run(ctx context.Context, configPath string, log *slog.Logger) error {
-	// Config is intentionally empty. Wire its fields here when added.
-	if _, err := config.Load(configPath); err != nil {
+	cfg, err := config.Load(configPath)
+	if err != nil {
 		return err
 	}
+	pool, err := postgres.New(ctx, cfg.Postgres)
+	if err != nil {
+		return err
+	}
+	defer pool.Close()
+	log.Info("postgres connected")
+	// Inject pool into repository constructors as business features are added.
 	gin.SetMode(gin.ReleaseMode)
 	server := &http.Server{
 		Addr:              ":8080",
-		Handler:           httptransport.NewRouter(log),
+		Handler:           httptransport.NewRouter(log, pool.Ping),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

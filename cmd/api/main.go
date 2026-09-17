@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", ".env", "path to .env config")
+	configPath := flag.String("config", ".env", "path to .env config (empty: use environment only)")
 	flag.Parse()
 
 	log := logger.New(os.Stdout)

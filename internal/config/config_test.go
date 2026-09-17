@@ -8,6 +8,7 @@ import (
 )
 
 func TestLoad(t *testing.T) {
+	setTestEnvironment(t)
 	for _, tc := range []struct {
 		name    string
 		content string
@@ -42,8 +43,9 @@ func TestLoadMissingFile(t *testing.T) {
 }
 
 func TestLoadEnvironment(t *testing.T) {
-	const loadedKey = "POIDEM_CONFIG_TEST_LOADED"
-	const existingKey = "POIDEM_CONFIG_TEST_EXISTING"
+	setTestEnvironment(t)
+	const loadedKey = "POSTGRES_PASSWORD"
+	const existingKey = "POSTGRES_HOST"
 	// Setenv registers restoration of the original value, even after Unsetenv.
 	t.Setenv(loadedKey, "")
 	if err := os.Unsetenv(loadedKey); err != nil {
@@ -55,7 +57,8 @@ func TestLoadEnvironment(t *testing.T) {
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Load(path); err != nil {
+	cfg, err := Load(path)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if got := os.Getenv(loadedKey); got != "hello world" {
@@ -63,5 +66,51 @@ func TestLoadEnvironment(t *testing.T) {
 	}
 	if got := os.Getenv(existingKey); got != "from environment" {
 		t.Fatalf("existing environment variable was overwritten: %q", got)
+	}
+	if cfg.Postgres.Password != "hello world" || cfg.Postgres.Host != "from environment" {
+		t.Fatal("config must use values loaded from .env with environment priority")
+	}
+}
+
+func setTestEnvironment(t *testing.T) {
+	t.Helper()
+	for key, value := range map[string]string{
+		"POSTGRES_HOST": "", "POSTGRES_PORT": "", "POSTGRES_USER": "",
+		"POSTGRES_DB": "", "POSTGRES_SSLMODE": "", "POSTGRES_PASSWORD": "test-password",
+	} {
+		t.Setenv(key, value)
+	}
+}
+
+func TestLoadEnvironmentOnly(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("POSTGRES_HOST", "database")
+	t.Setenv("POSTGRES_PORT", "5433")
+	t.Setenv("POSTGRES_USER", "backend")
+	t.Setenv("POSTGRES_DB", "backend_db")
+	t.Setenv("POSTGRES_SSLMODE", "require")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Postgres{Host: "database", Port: 5433, User: "backend", Password: "test-password", Database: "backend_db", SSLMode: "require"}
+	if cfg.Postgres != want {
+		t.Fatal("PostgreSQL settings do not match environment")
+	}
+}
+
+func TestLoadInvalidPostgresSettings(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"POSTGRES_PORT", "0"}, {"POSTGRES_PORT", "65536"},
+		{"POSTGRES_PORT", "abc"}, {"POSTGRES_PORT", "-1"},
+		{"POSTGRES_PASSWORD", ""}, {"POSTGRES_SSLMODE", "invalid"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			setTestEnvironment(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("expected invalid configuration to fail")
+			}
+		})
 	}
 }
