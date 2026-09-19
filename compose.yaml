@@ -15,8 +15,25 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
     stop_grace_period: 15s
+
+  migrate:
+    image: migrate/migrate:v4.19.1
+    environment:
+      PGUSER: ${POSTGRES_USER:-poidem}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-poidem}
+    volumes:
+      - ./migrations:/migrations:ro
+    entrypoint: ["migrate", "-path", "/migrations", "-database", "postgres://db:5432?sslmode=disable"]
+    command: ["up"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
 
   db:
     image: postgres:17-alpine

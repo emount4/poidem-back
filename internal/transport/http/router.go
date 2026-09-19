@@ -12,7 +12,8 @@ import (
 
 func NewRouter(log *slog.Logger, pingDatabase func(context.Context) error) *gin.Engine {
 	router := gin.New()
-	router.Use(requestLogger(log), recovery(log))
+	router.Use(requestIDMiddleware(), requestLogger(log), recovery(log))
+	registerAPIRoutes(router)
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})

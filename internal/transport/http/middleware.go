@@ -7,6 +7,7 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/emount4/poidem-back/internal/requestid"
 	"github.com/gin-gonic/gin"
 )
 
@@ -21,6 +22,7 @@ func requestLogger(log *slog.Logger) gin.HandlerFunc {
 			level = slog.LevelWarn
 		}
 		log.Log(c.Request.Context(), level, "http request",
+			"request_id", requestid.FromContext(c.Request.Context()),
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),
@@ -32,6 +34,7 @@ func requestLogger(log *slog.Logger) gin.HandlerFunc {
 func recovery(log *slog.Logger) gin.HandlerFunc {
 	return gin.CustomRecoveryWithWriter(nil, func(c *gin.Context, recovered any) {
 		log.ErrorContext(c.Request.Context(), "http panic",
+			"request_id", requestid.FromContext(c.Request.Context()),
 			"error", fmt.Sprint(recovered), "stack", string(debug.Stack()))
 		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": "internal server error",

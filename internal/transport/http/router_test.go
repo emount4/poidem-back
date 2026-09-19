@@ -57,6 +57,10 @@ func TestRecovery(t *testing.T) {
 	if requestLog["status"] != float64(http.StatusInternalServerError) || requestLog["level"] != "ERROR" {
 		t.Fatalf("unexpected request log: %v", requestLog)
 	}
+	id := response.Header().Get("X-Request-ID")
+	if id == "" || panicLog["request_id"] != id || requestLog["request_id"] != id {
+		t.Fatal("panic log, request log and response must share the same request ID")
+	}
 }
 
 func TestReadiness(t *testing.T) {
