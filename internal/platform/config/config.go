@@ -3,14 +3,43 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
 
 type Config struct {
 	Postgres Postgres
+	Auth     Auth
+	OAuth    OAuth
+}
+
+type Auth struct {
+	JWTSecret          string
+	JWTIssuer          string
+	JWTAudience        string
+	AccessTTL          time.Duration
+	RefreshTTL         time.Duration
+	RefreshRetryWindow time.Duration
+	CookieSecure       bool
+	CookieSameSite     string
+	CookieDomain       string
+	CookiePath         string
+}
+
+type OAuth struct {
+	FrontendURL        string
+	FrontendOrigin     string
+	APIURL             string
+	CallbackURL        string
+	StateSecret        string
+	FlowTTL            time.Duration
+	GoogleClientID     string
+	GoogleClientSecret string
 }
 
 type Postgres struct {
@@ -50,7 +79,95 @@ func Load(path string) (*Config, error) {
 	default:
 		return nil, fmt.Errorf("POSTGRES_SSLMODE is invalid")
 	}
+	accessTTL, err := durationEnv("ACCESS_TOKEN_TTL", "15m")
+	if err != nil {
+		return nil, err
+	}
+	refreshTTL, err := durationEnv("REFRESH_TOKEN_TTL", "720h")
+	if err != nil {
+		return nil, err
+	}
+	retryWindow, err := durationEnv("REFRESH_RETRY_WINDOW", "10s")
+	if err != nil {
+		return nil, err
+	}
+	cookieSecure, err := strconv.ParseBool(env("REFRESH_COOKIE_SECURE", "false"))
+	if err != nil {
+		return nil, fmt.Errorf("REFRESH_COOKIE_SECURE must be true or false")
+	}
+	cfg.Auth = Auth{
+		JWTSecret: os.Getenv("JWT_SECRET"), JWTIssuer: env("JWT_ISSUER", "poydem"),
+		JWTAudience: env("JWT_AUDIENCE", "poydem-api"), AccessTTL: accessTTL,
+		RefreshTTL: refreshTTL, RefreshRetryWindow: retryWindow, CookieSecure: cookieSecure,
+		CookieSameSite: strings.ToLower(env("REFRESH_COOKIE_SAME_SITE", "lax")),
+		CookieDomain:   os.Getenv("REFRESH_COOKIE_DOMAIN"), CookiePath: env("REFRESH_COOKIE_PATH", "/api/v1/auth"),
+	}
+	if len(cfg.Auth.JWTSecret) < 32 {
+		return nil, fmt.Errorf("JWT_SECRET must contain at least 32 bytes")
+	}
+	if cfg.Auth.RefreshTTL <= cfg.Auth.AccessTTL {
+		return nil, fmt.Errorf("REFRESH_TOKEN_TTL must exceed ACCESS_TOKEN_TTL")
+	}
+	if cfg.Auth.CookiePath == "" || cfg.Auth.CookiePath[0] != '/' {
+		return nil, fmt.Errorf("REFRESH_COOKIE_PATH must start with /")
+	}
+	switch cfg.Auth.CookieSameSite {
+	case "lax", "strict", "none":
+	default:
+		return nil, fmt.Errorf("REFRESH_COOKIE_SAME_SITE must be lax, strict or none")
+	}
+	if cfg.Auth.CookieSameSite == "none" && !cfg.Auth.CookieSecure {
+		return nil, fmt.Errorf("SameSite=None requires REFRESH_COOKIE_SECURE=true")
+	}
+	flowTTL, err := durationEnv("OAUTH_FLOW_TTL", "10m")
+	if err != nil {
+		return nil, err
+	}
+	apiURL := strings.TrimRight(env("API_URL", "http://localhost:8080"), "/")
+	cfg.OAuth = OAuth{
+		FrontendURL: strings.TrimRight(env("FRONTEND_URL", "http://localhost:3000"), "/"),
+		APIURL:      apiURL, CallbackURL: env("OAUTH_CALLBACK_URL", apiURL+"/api/v1/auth/google/callback"),
+		StateSecret: env("OAUTH_STATE_SECRET", cfg.Auth.JWTSecret), FlowTTL: flowTTL,
+		GoogleClientID: os.Getenv("GOOGLE_CLIENT_ID"), GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+	}
+	if err := validateBaseURL("FRONTEND_URL", cfg.OAuth.FrontendURL); err != nil {
+		return nil, err
+	}
+	cfg.OAuth.FrontendOrigin = origin(cfg.OAuth.FrontendURL)
+	if err := validateBaseURL("API_URL", cfg.OAuth.APIURL); err != nil {
+		return nil, err
+	}
+	if err := validateBaseURL("OAUTH_CALLBACK_URL", cfg.OAuth.CallbackURL); err != nil {
+		return nil, err
+	}
+	if len(cfg.OAuth.StateSecret) < 32 {
+		return nil, fmt.Errorf("OAUTH_STATE_SECRET must contain at least 32 bytes")
+	}
+	if (cfg.OAuth.GoogleClientID == "") != (cfg.OAuth.GoogleClientSecret == "") {
+		return nil, fmt.Errorf("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together")
+	}
 	return cfg, nil
+}
+
+func validateBaseURL(key, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("%s must be an absolute HTTP(S) URL", key)
+	}
+	return nil
+}
+
+func origin(value string) string {
+	parsed, _ := url.Parse(value)
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func durationEnv(key, fallback string) (time.Duration, error) {
+	value, err := time.ParseDuration(env(key, fallback))
+	if err != nil || value <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration", key)
+	}
+	return value, nil
 }
 
 func env(key, fallback string) string {

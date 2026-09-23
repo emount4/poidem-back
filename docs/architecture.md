@@ -7,6 +7,7 @@
 cmd/api                 точка входа
 internal/app            сборка зависимостей и жизненный цикл
 internal/api            общий HTTP-слой и версии API
+internal/account        авторизация, principal и правила onboarding
 internal/catalog        модуль справочников
 internal/platform       инфраструктура без бизнес-логики
 migrations              миграции PostgreSQL
@@ -25,3 +26,7 @@ migrations              миграции PostgreSQL
 Общие HTTP middleware и маршрутизация версий находятся в `internal/api`.
 Конфигурация, логирование, PostgreSQL и Request ID находятся в
 `internal/platform`.
+
+Транзакционные границы задают сервисы через небольшой `Transactor`. PostgreSQL
+реализация помещает `pgx.Tx` в context; адаптеры репозиториев получают текущий
+executor через `platform/postgres.Executor`. Вложенные транзакции запрещены.

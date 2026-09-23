@@ -14,12 +14,13 @@ import (
 
 type Dependencies struct {
 	PingDatabase func(context.Context) error
+	CORSOrigin   string
 	V1           v1.Dependencies
 }
 
 func NewRouter(log *slog.Logger, dependencies Dependencies) *gin.Engine {
 	router := gin.New()
-	router.Use(requestIDMiddleware(), requestLogger(log), recovery(log))
+	router.Use(requestIDMiddleware(), requestLogger(log), recovery(log), cors(dependencies.CORSOrigin))
 	registerAPIRoutes(router, dependencies.V1)
 	router.NoRoute(func(c *gin.Context) {
 		apierr.Write(c, http.StatusNotFound, "NOT_FOUND", "Ресурс не найден", nil)

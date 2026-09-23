@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -55,5 +56,43 @@ func TestIntegration(t *testing.T) {
 	}
 	if value != 1 {
 		t.Fatalf("SELECT 1 returned %d", value)
+	}
+
+	manager := NewTxManager(pool)
+	const table = "tx_manager_integration_test"
+	_, _ = pool.Exec(ctx, "DROP TABLE IF EXISTS "+table)
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), "DROP TABLE IF EXISTS "+table) })
+
+	rollbackCause := errors.New("rollback requested")
+	err = manager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if _, err := Executor(txCtx, pool).Exec(txCtx, "CREATE TABLE "+table+" (id INT)"); err != nil {
+			return err
+		}
+		return rollbackCause
+	})
+	if !errors.Is(err, rollbackCause) {
+		t.Fatalf("rollback error = %v", err)
+	}
+	var exists bool
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public."+table+"') IS NOT NULL").Scan(&exists); err != nil || exists {
+		t.Fatalf("rolled back table exists=%v, error=%v", exists, err)
+	}
+
+	err = manager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		_, err := Executor(txCtx, pool).Exec(txCtx, "CREATE TABLE "+table+" (id INT)")
+		return err
+	})
+	if err != nil {
+		t.Fatalf("commit transaction: %v", err)
+	}
+	if err := pool.QueryRow(ctx, "SELECT to_regclass('public."+table+"') IS NOT NULL").Scan(&exists); err != nil || !exists {
+		t.Fatalf("committed table exists=%v, error=%v", exists, err)
+	}
+
+	err = manager.WithinTransaction(ctx, func(txCtx context.Context) error {
+		return manager.WithinTransaction(txCtx, func(context.Context) error { return nil })
+	})
+	if !errors.Is(err, ErrNestedTransaction) {
+		t.Fatalf("nested transaction error = %v", err)
 	}
 }

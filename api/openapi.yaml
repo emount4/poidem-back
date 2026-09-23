@@ -1,0 +1,873 @@
+openapi: 3.0.3
+info:
+  title: Poydem API
+  version: 1.0.0
+  description: MVP API contract for the Poydem event and company service.
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/{provider}:
+    get:
+      security: []
+      summary: Start OAuth authentication
+      parameters:
+        - $ref: '#/components/parameters/Provider'
+      responses:
+        '302': {description: Redirect to OAuth provider}
+        '503':
+          description: Provider is not configured
+  /auth/{provider}/callback:
+    get:
+      security: []
+      summary: OAuth callback
+      parameters:
+        - $ref: '#/components/parameters/Provider'
+        - {name: code, in: query, required: false, description: Authorization code on success, schema: {type: string}}
+        - {name: state, in: query, required: false, description: Required with a successful authorization code, schema: {type: string}}
+        - {name: error, in: query, required: false, description: Provider error code when authorization fails, schema: {type: string}}
+      responses:
+        '302':
+          description: Refresh cookie is set; redirects to frontend auth callback or error page. Tokens are never included in the URL.
+  /auth/me:
+    get:
+      summary: Current user
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auth/refresh:
+    post:
+      security: []
+      summary: Refresh access token
+      responses:
+        '200':
+          description: Refresh cookie is rotated and a new access token is returned
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: {accessToken: {type: string}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /auth/logout:
+    post:
+      security: []
+      summary: Logout
+      responses:
+        '204': {description: Current refresh session is revoked and its cookie is cleared}
+
+  /users/me:
+    get:
+      summary: Get profile
+      responses:
+        '200':
+          description: Profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+    patch:
+      summary: Update profile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateProfile'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /users/me/avatar:
+    post:
+      summary: Upload avatar
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties: {file: {type: string, format: binary}}
+      responses:
+        '200':
+          description: Uploaded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AvatarResponse'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+    delete:
+      summary: Delete avatar
+      responses:
+        '204': {description: Deleted}
+  /users/me/events:
+    get:
+      summary: My events
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [upcoming, past]}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MyEventList'}
+  /users/me/companies:
+    get:
+      summary: My companies
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Companies
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyList'}
+  /users/me/applications:
+    get:
+      summary: My applications
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Applications
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationList'}
+
+  /cities:
+    get:
+      security: []
+      summary: Cities
+      responses:
+        '200':
+          description: Cities
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
+  /interests:
+    get:
+      security: []
+      summary: Interests
+      responses:
+        '200':
+          description: Interests
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
+  /event-categories:
+    get:
+      security: []
+      summary: Event categories
+      responses:
+        '200':
+          description: Categories
+          content:
+            application/json:
+              schema: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
+
+  /events:
+    get:
+      security: []
+      summary: Search events
+      parameters:
+        - {name: search, in: query, schema: {type: string}}
+        - {name: cityId, in: query, schema: {type: integer, format: int64}}
+        - {name: categoryId, in: query, schema: {type: integer, format: int64}}
+        - {name: dateFrom, in: query, description: Inclusive boundary with timezone offset, schema: {type: string, format: date-time}}
+        - {name: dateTo, in: query, description: Inclusive boundary with timezone offset, schema: {type: string, format: date-time}}
+        - {name: sort, in: query, schema: {type: string, enum: [popular, date, newest]}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventList'}
+    post:
+      summary: Create event
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EventInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Event'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+  /events/{eventId}:
+    get:
+      security: []
+      summary: Event details
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      responses:
+        '200':
+          description: Event
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Event'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /events/{eventId}/participants:
+    get:
+      security: []
+      summary: Event participants
+      parameters:
+        - {$ref: '#/components/parameters/EventId'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Participants
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserShortList'}
+  /events/{eventId}/companies:
+    get:
+      security: []
+      summary: Event companies
+      parameters:
+        - {$ref: '#/components/parameters/EventId'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Companies
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyList'}
+    post:
+      summary: Create company
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CompanyInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Company'}
+  /events/{eventId}/solo-participation:
+    post:
+      summary: Join event solo
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      responses:
+        '201': {description: Joined}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      summary: Cancel solo participation
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      responses:
+        '204': {description: Cancelled}
+
+  /companies/{companyId}:
+    get:
+      security: []
+      summary: Company details
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '200':
+          description: Company
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Company'}
+    patch:
+      summary: Update company
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateCompany'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Company'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    delete:
+      summary: Delete company
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '204': {description: Deleted}
+  /companies/{companyId}/members:
+    get:
+      security: []
+      summary: Company members
+      parameters:
+        - {$ref: '#/components/parameters/CompanyId'}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Members
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserShortList'}
+  /companies/{companyId}/members/me:
+    delete:
+      summary: Leave company
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '204': {description: Left}
+  /companies/{companyId}/members/{userId}:
+    delete:
+      summary: Remove member
+      parameters:
+        - {$ref: '#/components/parameters/CompanyId'}
+        - {$ref: '#/components/parameters/UserId'}
+      responses:
+        '204': {description: Removed}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /companies/{companyId}/join:
+    post:
+      summary: Join open company
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '201': {description: Joined}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /companies/{companyId}/close:
+    post:
+      summary: Close recruitment
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '200': {description: Closed}
+  /companies/{companyId}/open:
+    post:
+      summary: Open recruitment
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '200': {description: Opened}
+
+  /companies/{companyId}/applications:
+    get:
+      summary: Company applications
+      parameters:
+        - {$ref: '#/components/parameters/CompanyId'}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ApplicationStatus'}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Applications
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationList'}
+    post:
+      summary: Apply to company
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties: {message: {type: string, maxLength: 1000}}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /companies/{companyId}/applications/me:
+    get:
+      summary: My application
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '200':
+          description: Application
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      summary: Cancel application
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '204': {description: Cancelled}
+  /companies/{companyId}/applications/{applicationId}/approve:
+    post:
+      summary: Approve application
+      parameters:
+        - {$ref: '#/components/parameters/CompanyId'}
+        - {$ref: '#/components/parameters/ApplicationId'}
+      responses:
+        '200':
+          description: Approved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /companies/{companyId}/applications/{applicationId}/reject:
+    post:
+      summary: Reject application
+      parameters:
+        - {$ref: '#/components/parameters/CompanyId'}
+        - {$ref: '#/components/parameters/ApplicationId'}
+      responses:
+        '200':
+          description: Rejected
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+
+  /reports:
+    post:
+      summary: Create report
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReportInput'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Report'}
+
+  /admin/dashboard:
+    get:
+      summary: Admin dashboard
+      responses:
+        '200':
+          description: Statistics
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminDashboard'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /admin/users:
+    get:
+      summary: Admin users
+      parameters:
+        - {name: search, in: query, schema: {type: string}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Users
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserList'}
+  /admin/users/{userId}:
+    get:
+      summary: Admin user details
+      parameters: [{$ref: '#/components/parameters/UserId'}]
+      responses:
+        '200':
+          description: User
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+  /admin/users/{userId}/ban:
+    post:
+      summary: Ban user
+      parameters: [{$ref: '#/components/parameters/UserId'}]
+      responses:
+        '200': {description: Banned}
+  /admin/users/{userId}/unban:
+    post:
+      summary: Unban user
+      parameters: [{$ref: '#/components/parameters/UserId'}]
+      responses:
+        '200': {description: Unbanned}
+
+  /admin/events:
+    get:
+      summary: Admin events
+      parameters:
+        - {name: search, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/EventStatus'}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventList'}
+  /admin/events/{eventId}:
+    get:
+      summary: Admin event details
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      responses:
+        '200':
+          description: Event
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Event'}
+    patch:
+      summary: Admin update event
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateEvent'}
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Event'}
+  /admin/events/{eventId}/{action}:
+    post:
+      summary: Moderate event
+      parameters:
+        - {$ref: '#/components/parameters/EventId'}
+        - {name: action, in: path, required: true, schema: {type: string, enum: [approve, reject, block]}}
+      responses:
+        '200': {description: Status changed}
+
+  /admin/companies:
+    get:
+      summary: Admin companies
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Companies
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CompanyList'}
+  /admin/companies/{companyId}/block:
+    post:
+      summary: Block company
+      parameters: [{$ref: '#/components/parameters/CompanyId'}]
+      responses:
+        '200': {description: Blocked}
+
+  /admin/reports:
+    get:
+      summary: Admin reports
+      parameters:
+        - {name: status, in: query, schema: {type: string, enum: [pending, resolved, rejected]}}
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200':
+          description: Reports
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReportList'}
+  /admin/reports/{reportId}:
+    get:
+      summary: Admin report details
+      parameters:
+        - {name: reportId, in: path, required: true, schema: {type: integer, format: int64}}
+      responses:
+        '200':
+          description: Report
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Report'}
+  /admin/reports/{reportId}/{action}:
+    post:
+      summary: Resolve or reject report
+      parameters:
+        - {name: reportId, in: path, required: true, schema: {type: integer, format: int64}}
+        - {name: action, in: path, required: true, schema: {type: string, enum: [resolve, reject]}}
+      responses:
+        '200': {description: Processed}
+
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+  parameters:
+    Provider:
+      name: provider
+      in: path
+      required: true
+      schema: {type: string, enum: [google, vk, telegram]}
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
+    CompanyId:
+      name: companyId
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
+    ApplicationId:
+      name: applicationId
+      in: path
+      required: true
+      schema: {type: integer, format: int64}
+    Page:
+      name: page
+      in: query
+      schema: {type: integer, minimum: 1, default: 1}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+  responses:
+    BadRequest:
+      description: Bad request
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Unauthorized:
+      description: Unauthorized
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Forbidden:
+      description: Forbidden
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    NotFound:
+      description: Not found
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    Conflict:
+      description: Conflict
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    PayloadTooLarge:
+      description: Uploaded avatar exceeds 5 242 880 bytes
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    UnsupportedMediaType:
+      description: Avatar must be image/jpeg, image/png or image/webp
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+  schemas:
+    DictionaryItem:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        slug: {type: string, nullable: true}
+    UserShort:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        firstName: {type: string}
+        lastName: {type: string, nullable: true}
+        avatarUrl: {type: string, nullable: true}
+    User:
+      allOf:
+        - {$ref: '#/components/schemas/UserShort'}
+        - type: object
+          required: [city, interests, role, status, isProfileComplete, createdAt]
+          properties:
+            city:
+              nullable: true
+              allOf: [{$ref: '#/components/schemas/DictionaryItem'}]
+            about: {type: string, nullable: true}
+            interests: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
+            role: {type: string, enum: [user, admin]}
+            status: {type: string, enum: [active, banned]}
+            isProfileComplete:
+              type: boolean
+              description: Calculated by backend as non-empty firstName and non-null city
+            createdAt: {type: string, format: date-time}
+    UpdateProfile:
+      type: object
+      description: Omitted fields are unchanged; null clears only nullable fields. cityId cannot be cleared after onboarding is complete.
+      properties:
+        firstName: {type: string, minLength: 1, maxLength: 100}
+        lastName: {type: string, maxLength: 100, nullable: true}
+        cityId: {type: integer, format: int64, nullable: true}
+        about: {type: string, maxLength: 2000, nullable: true}
+        interestIds: {type: array, uniqueItems: true, items: {type: integer, format: int64}}
+    EventStatus:
+      type: string
+      enum: [pending, active, rejected, blocked, completed]
+    EventInput:
+      type: object
+      required: [title, categoryId, cityId, startsAt, locationName]
+      properties:
+        title: {type: string, maxLength: 200}
+        description: {type: string, maxLength: 5000}
+        categoryId: {type: integer, format: int64}
+        cityId: {type: integer, format: int64}
+        startsAt: {type: string, format: date-time}
+        endsAt: {type: string, format: date-time}
+        locationName: {type: string, maxLength: 255}
+        address: {type: string, maxLength: 500}
+        imageUrl: {type: string}
+    UpdateEvent:
+      type: object
+      description: Partial admin update; omitted fields are unchanged
+      properties:
+        title: {type: string, maxLength: 200}
+        description: {type: string, maxLength: 5000, nullable: true}
+        categoryId: {type: integer, format: int64}
+        cityId: {type: integer, format: int64}
+        startsAt: {type: string, format: date-time}
+        endsAt: {type: string, format: date-time, nullable: true}
+        locationName: {type: string, maxLength: 255}
+        address: {type: string, maxLength: 500, nullable: true}
+        imageUrl: {type: string, nullable: true}
+    Event:
+      allOf:
+        - {$ref: '#/components/schemas/EventInput'}
+        - type: object
+          properties:
+            id: {type: integer, format: int64}
+            status: {$ref: '#/components/schemas/EventStatus'}
+            participantsCount: {type: integer}
+            companiesCount: {type: integer}
+            creator: {$ref: '#/components/schemas/UserShort'}
+    EventList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Event'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    MyEvent:
+      allOf:
+        - {$ref: '#/components/schemas/Event'}
+        - type: object
+          required: [relation]
+          properties:
+            relation: {type: string, enum: [creator, participant, creator_and_participant]}
+    MyEventList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/MyEvent'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    CompanyInput:
+      type: object
+      required: [name, maxMembers, joinType]
+      properties:
+        name: {type: string, maxLength: 150}
+        description: {type: string, maxLength: 2000}
+        maxMembers: {type: integer, minimum: 2, maximum: 100}
+        joinType: {type: string, enum: [open, request]}
+        rules: {type: string, maxLength: 2000}
+    UpdateCompany:
+      type: object
+      description: Partial update; omitted fields are unchanged
+      properties:
+        name: {type: string, maxLength: 150}
+        description: {type: string, maxLength: 2000, nullable: true}
+        maxMembers: {type: integer, minimum: 2, maximum: 100}
+        joinType: {type: string, enum: [open, request]}
+        rules: {type: string, maxLength: 2000, nullable: true}
+    Company:
+      allOf:
+        - {$ref: '#/components/schemas/CompanyInput'}
+        - type: object
+          properties:
+            id: {type: integer, format: int64}
+            eventId: {type: integer, format: int64}
+            owner: {$ref: '#/components/schemas/UserShort'}
+            membersCount: {type: integer}
+            status: {type: string, enum: [active, closed, blocked]}
+            createdAt: {type: string, format: date-time}
+    ApplicationStatus:
+      type: string
+      enum: [pending, approved, rejected, cancelled]
+    Application:
+      type: object
+      properties:
+        id: {type: integer, format: int64}
+        companyId: {type: integer, format: int64}
+        user: {$ref: '#/components/schemas/UserShort'}
+        message: {type: string, nullable: true}
+        status: {$ref: '#/components/schemas/ApplicationStatus'}
+        createdAt: {type: string, format: date-time}
+        resolvedAt: {type: string, format: date-time, nullable: true}
+    CompanyList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Company'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    ApplicationList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Application'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    UserShortList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/UserShort'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    UserList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/User'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    ReportInput:
+      type: object
+      required: [targetType, targetId, reason]
+      properties:
+        targetType: {type: string, enum: [user, company, event]}
+        targetId: {type: integer, format: int64}
+        reason: {type: string, maxLength: 100}
+        description: {type: string, maxLength: 2000}
+    Report:
+      allOf:
+        - {$ref: '#/components/schemas/ReportInput'}
+        - type: object
+          properties:
+            id: {type: integer, format: int64}
+            author: {$ref: '#/components/schemas/UserShort'}
+            status: {type: string, enum: [pending, resolved, rejected]}
+            createdAt: {type: string, format: date-time}
+    ReportList:
+      type: object
+      required: [items, pagination]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Report'}}
+        pagination: {$ref: '#/components/schemas/Pagination'}
+    AdminDashboard:
+      type: object
+      properties:
+        usersTotal: {type: integer}
+        activeEvents: {type: integer}
+        pendingReports: {type: integer}
+        newRegistrations30d: {type: integer, description: Registrations during the last 30 calendar days including today}
+    AvatarResponse:
+      type: object
+      required: [avatarUrl]
+      properties:
+        avatarUrl: {type: string, format: uri}
+    Pagination:
+      type: object
+      required: [page, limit, total, totalPages]
+      properties:
+        page: {type: integer, minimum: 1}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        total: {type: integer, minimum: 0}
+        totalPages: {type: integer, minimum: 0, description: Zero when total is zero}
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              example: COMPANY_FULL
+              description: Stable UPPER_SNAKE_CASE business code, including PROFILE_INCOMPLETE, OWNER_CANNOT_LEAVE and ALREADY_IN_EVENT_COMPANY
+            message: {type: string, example: No free places in company}
+            details:
+              type: object
+              additionalProperties: true
+              description: VALIDATION_ERROR uses details.fields as a map of field names to arrays of messages
+

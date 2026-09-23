@@ -77,8 +77,46 @@ func setTestEnvironment(t *testing.T) {
 	for key, value := range map[string]string{
 		"POSTGRES_HOST": "", "POSTGRES_PORT": "", "POSTGRES_USER": "",
 		"POSTGRES_DB": "", "POSTGRES_SSLMODE": "", "POSTGRES_PASSWORD": "test-password",
+		"JWT_SECRET":       "12345678901234567890123456789012",
+		"ACCESS_TOKEN_TTL": "", "REFRESH_TOKEN_TTL": "", "REFRESH_RETRY_WINDOW": "",
+		"REFRESH_COOKIE_SECURE": "", "REFRESH_COOKIE_SAME_SITE": "",
+		"REFRESH_COOKIE_DOMAIN": "", "REFRESH_COOKIE_PATH": "",
+		"FRONTEND_URL": "", "API_URL": "", "OAUTH_CALLBACK_URL": "",
+		"OAUTH_STATE_SECRET": "", "OAUTH_FLOW_TTL": "",
+		"GOOGLE_CLIENT_ID": "", "GOOGLE_CLIENT_SECRET": "",
 	} {
 		t.Setenv(key, value)
+	}
+}
+
+func TestLoadOAuthSettings(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("API_URL", "https://api.example.com/")
+	t.Setenv("FRONTEND_URL", "https://app.example.com/")
+	t.Setenv("GOOGLE_CLIENT_ID", "client")
+	t.Setenv("GOOGLE_CLIENT_SECRET", "secret")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OAuth.CallbackURL != "https://api.example.com/api/v1/auth/google/callback" || cfg.OAuth.FrontendURL != "https://app.example.com" {
+		t.Fatalf("unexpected OAuth URLs: %+v", cfg.OAuth)
+	}
+
+	for _, tc := range []struct{ key, value string }{
+		{"FRONTEND_URL", "localhost:3000"},
+		{"API_URL", "ftp://api.example.com"},
+		{"OAUTH_FLOW_TTL", "0s"},
+		{"OAUTH_STATE_SECRET", "short"},
+		{"GOOGLE_CLIENT_ID", "client-without-secret"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			setTestEnvironment(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("expected invalid OAuth configuration to fail")
+			}
+		})
 	}
 }
 
@@ -112,5 +150,31 @@ func TestLoadInvalidPostgresSettings(t *testing.T) {
 				t.Fatal("expected invalid configuration to fail")
 			}
 		})
+	}
+}
+
+func TestLoadInvalidAuthSettings(t *testing.T) {
+	for _, tc := range []struct{ key, value string }{
+		{"JWT_SECRET", "short"},
+		{"ACCESS_TOKEN_TTL", "invalid"},
+		{"REFRESH_TOKEN_TTL", "10m"},
+		{"REFRESH_RETRY_WINDOW", "0s"},
+		{"REFRESH_COOKIE_SECURE", "sometimes"},
+		{"REFRESH_COOKIE_SAME_SITE", "invalid"},
+		{"REFRESH_COOKIE_PATH", "auth"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			setTestEnvironment(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("expected invalid auth configuration to fail")
+			}
+		})
+	}
+	setTestEnvironment(t)
+	t.Setenv("REFRESH_COOKIE_SAME_SITE", "none")
+	t.Setenv("REFRESH_COOKIE_SECURE", "false")
+	if _, err := Load(""); err == nil {
+		t.Fatal("SameSite=None without Secure must fail")
 	}
 }

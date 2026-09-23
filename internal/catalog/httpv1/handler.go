@@ -48,8 +48,7 @@ func (h dictionaryHandler) eventCategories(c *gin.Context) {
 func (h dictionaryHandler) list(c *gin.Context, load func(context.Context) ([]catalog.Item, error)) {
 	items, err := load(c.Request.Context())
 	if err != nil {
-		_ = c.Error(err)
-		apierr.Write(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервера", nil)
+		apierr.WriteInternal(c, err)
 		return
 	}
 	response := make([]dictionaryItemResponse, len(items))

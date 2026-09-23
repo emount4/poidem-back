@@ -20,14 +20,16 @@ DO $$
 BEGIN
     IF (SELECT count(*) FROM information_schema.tables
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-        AND table_name <> 'schema_migrations') <> 12 THEN
-        RAISE EXCEPTION 'Expected 12 application tables';
+        AND table_name <> 'schema_migrations') <> 13 THEN
+        RAISE EXCEPTION 'Expected 13 application tables';
     END IF;
     IF (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
         'idx_events_city_start', 'idx_events_category', 'idx_events_status',
         'idx_companies_event', 'idx_companies_owner', 'idx_applications_company_status',
-        'idx_applications_user', 'idx_event_participants_user', 'idx_reports_status'
-    )) <> 9 THEN
+        'idx_applications_user', 'idx_event_participants_user', 'idx_reports_status',
+        'uq_sessions_previous_token_hash', 'idx_sessions_user_active',
+        'idx_sessions_expires_active'
+    )) <> 12 THEN
         RAISE EXCEPTION 'Missing recommended indexes';
     END IF;
 END;
@@ -38,6 +40,8 @@ INSERT INTO interests (id, name, slug) VALUES (1, 'Walking', 'walking');
 INSERT INTO event_categories (id, name, slug) VALUES (1, 'Outdoors', 'outdoors');
 INSERT INTO users (id, first_name, city_id) VALUES (1, 'Owner', 1), (2, 'Guest', 1);
 INSERT INTO auth_accounts (user_id, provider, provider_user_id) VALUES (1, 'test', 'external-1');
+INSERT INTO sessions (user_id, token_hash, expires_at)
+VALUES (1, decode(repeat('ab', 32), 'hex'), now() + interval '30 days');
 INSERT INTO user_interests (user_id, interest_id) VALUES (1, 1);
 INSERT INTO events (id, creator_id, category_id, city_id, title, starts_at, location_name, status)
 VALUES (1, 1, 1, 1, 'Walk', now(), 'Park', 'active');
@@ -60,6 +64,18 @@ $$;
 
 SELECT pg_temp.expect_sqlstate('INSERT INTO cities (name, slug) VALUES (''Duplicate'', ''test-city'')', '23505');
 SELECT pg_temp.expect_sqlstate('INSERT INTO auth_accounts (provider, provider_user_id) VALUES (''test'', ''external-1'')', '23505');
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (1, decode(repeat(''ab'', 32), ''hex''), now() + interval ''1 day'')',
+    '23505'
+);
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (1, decode(''ab'', ''hex''), now() + interval ''1 day'')',
+    '23514'
+);
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO sessions (user_id, token_hash, previous_token_hash, expires_at) VALUES (1, decode(repeat(''bc'', 32), ''hex''), decode(repeat(''cd'', 32), ''hex''), now() + interval ''1 day'')',
+    '23514'
+);
 SELECT pg_temp.expect_sqlstate('INSERT INTO user_interests VALUES (1, 1)', '23505');
 SELECT pg_temp.expect_sqlstate('INSERT INTO company_members (company_id, user_id) VALUES (1, 1)', '23505');
 SELECT pg_temp.expect_sqlstate('INSERT INTO event_participants (event_id, user_id) VALUES (1, 1)', '23505');

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/emount4/poidem-back/internal/catalog"
+	platformpostgres "github.com/emount4/poidem-back/internal/platform/postgres"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,15 +20,15 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 }
 
 func (r *Repository) Cities(ctx context.Context) ([]catalog.Item, error) {
-	return queryDictionary(ctx, r.pool, `SELECT id, name, slug FROM cities ORDER BY name, id`)
+	return queryDictionary(ctx, platformpostgres.Executor(ctx, r.pool), `SELECT id, name, slug FROM cities ORDER BY name, id`)
 }
 
 func (r *Repository) Interests(ctx context.Context) ([]catalog.Item, error) {
-	return queryDictionary(ctx, r.pool, `SELECT id, name, slug FROM interests ORDER BY name, id`)
+	return queryDictionary(ctx, platformpostgres.Executor(ctx, r.pool), `SELECT id, name, slug FROM interests ORDER BY name, id`)
 }
 
 func (r *Repository) EventCategories(ctx context.Context) ([]catalog.Item, error) {
-	return queryDictionary(ctx, r.pool, `SELECT id, name, slug FROM event_categories ORDER BY name, id`)
+	return queryDictionary(ctx, platformpostgres.Executor(ctx, r.pool), `SELECT id, name, slug FROM event_categories ORDER BY name, id`)
 }
 
 type queryer interface {

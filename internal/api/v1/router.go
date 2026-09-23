@@ -4,12 +4,16 @@ package v1
 import (
 	"net/http"
 
+	accounthttp "github.com/emount4/poidem-back/internal/account/httpv1"
 	cataloghttp "github.com/emount4/poidem-back/internal/catalog/httpv1"
 	"github.com/gin-gonic/gin"
 )
 
 type Dependencies struct {
-	Catalog cataloghttp.Catalog
+	Catalog        cataloghttp.Catalog
+	Sessions       accounthttp.Sessions
+	SessionCookies accounthttp.CookieConfig
+	OAuth          accounthttp.OAuthRoutesConfig
 }
 
 // RegisterRoutes mounts v1 routes on the supplied group.
@@ -19,4 +23,6 @@ func RegisterRoutes(routes *gin.RouterGroup, dependencies Dependencies) {
 		c.JSON(http.StatusOK, gin.H{"version": "v1"})
 	})
 	cataloghttp.RegisterRoutes(routes, dependencies.Catalog)
+	accounthttp.RegisterSessionRoutes(routes, dependencies.Sessions, dependencies.SessionCookies)
+	accounthttp.RegisterOAuthRoutes(routes, dependencies.OAuth)
 }

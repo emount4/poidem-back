@@ -12,6 +12,23 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-poidem}
       POSTGRES_SSLMODE: disable
+      JWT_SECRET: ${JWT_SECRET:-local_development_secret_change_me_32_bytes}
+      JWT_ISSUER: ${JWT_ISSUER:-poydem}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-poydem-api}
+      ACCESS_TOKEN_TTL: ${ACCESS_TOKEN_TTL:-15m}
+      REFRESH_TOKEN_TTL: ${REFRESH_TOKEN_TTL:-720h}
+      REFRESH_RETRY_WINDOW: ${REFRESH_RETRY_WINDOW:-10s}
+      REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-false}
+      REFRESH_COOKIE_SAME_SITE: ${REFRESH_COOKIE_SAME_SITE:-lax}
+      REFRESH_COOKIE_DOMAIN: ${REFRESH_COOKIE_DOMAIN:-}
+      REFRESH_COOKIE_PATH: ${REFRESH_COOKIE_PATH:-/api/v1/auth}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      API_URL: ${API_URL:-http://localhost:8080}
+      OAUTH_CALLBACK_URL: ${OAUTH_CALLBACK_URL:-http://localhost:8080/api/v1/auth/google/callback}
+      OAUTH_FLOW_TTL: ${OAUTH_FLOW_TTL:-10m}
+      OAUTH_STATE_SECRET: ${OAUTH_STATE_SECRET:-${JWT_SECRET:-local_development_secret_change_me_32_bytes}}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
     depends_on:
       db:
         condition: service_healthy
