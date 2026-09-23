@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/emount4/poidem-back/internal/config"
-	"github.com/emount4/poidem-back/internal/database/postgres"
-	httptransport "github.com/emount4/poidem-back/internal/transport/http"
+	"github.com/emount4/poidem-back/internal/api"
+	"github.com/emount4/poidem-back/internal/api/v1"
+	"github.com/emount4/poidem-back/internal/catalog"
+	catalogpostgres "github.com/emount4/poidem-back/internal/catalog/postgres"
+	"github.com/emount4/poidem-back/internal/platform/config"
+	"github.com/emount4/poidem-back/internal/platform/postgres"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,11 +30,16 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	}
 	defer pool.Close()
 	log.Info("postgres connected")
-	// Inject pool into repository constructors as business features are added.
+	catalogService := catalog.NewService(catalogpostgres.NewRepository(pool))
 	gin.SetMode(gin.ReleaseMode)
 	server := &http.Server{
-		Addr:              ":8080",
-		Handler:           httptransport.NewRouter(log, pool.Ping),
+		Addr: ":8080",
+		Handler: api.NewRouter(log, api.Dependencies{
+			PingDatabase: pool.Ping,
+			V1: v1.Dependencies{
+				Catalog: catalogService,
+			},
+		}),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,

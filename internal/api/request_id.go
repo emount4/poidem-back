@@ -1,9 +1,9 @@
-package http
+package api
 
 import (
 	"crypto/rand"
 
-	"github.com/emount4/poidem-back/internal/requestid"
+	"github.com/emount4/poidem-back/internal/platform/requestid"
 	"github.com/gin-gonic/gin"
 )
 

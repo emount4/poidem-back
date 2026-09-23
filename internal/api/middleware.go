@@ -1,4 +1,4 @@
-package http
+package api
 
 import (
 	"fmt"
@@ -7,7 +7,8 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/emount4/poidem-back/internal/requestid"
+	"github.com/emount4/poidem-back/internal/api/apierr"
+	"github.com/emount4/poidem-back/internal/platform/requestid"
 	"github.com/gin-gonic/gin"
 )
 
@@ -21,13 +22,17 @@ func requestLogger(log *slog.Logger) gin.HandlerFunc {
 		} else if c.Writer.Status() >= http.StatusBadRequest {
 			level = slog.LevelWarn
 		}
-		log.Log(c.Request.Context(), level, "http request",
+		attributes := []any{
 			"request_id", requestid.FromContext(c.Request.Context()),
 			"method", c.Request.Method,
 			"path", c.Request.URL.Path,
 			"status", c.Writer.Status(),
 			"duration", time.Since(started).String(),
-		)
+		}
+		if privateErrors := c.Errors.ByType(gin.ErrorTypePrivate); len(privateErrors) > 0 {
+			attributes = append(attributes, "error", privateErrors.String())
+		}
+		log.Log(c.Request.Context(), level, "http request", attributes...)
 	}
 }
 
@@ -36,8 +41,6 @@ func recovery(log *slog.Logger) gin.HandlerFunc {
 		log.ErrorContext(c.Request.Context(), "http panic",
 			"request_id", requestid.FromContext(c.Request.Context()),
 			"error", fmt.Sprint(recovered), "stack", string(debug.Stack()))
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error": "internal server error",
-		})
+		apierr.Write(c, http.StatusInternalServerError, "INTERNAL_ERROR", "Внутренняя ошибка сервера", nil)
 	})
 }

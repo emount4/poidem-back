@@ -1,4 +1,4 @@
-package http
+package api
 
 import (
 	"bytes"
@@ -10,13 +10,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/emount4/poidem-back/internal/logger"
+	"github.com/emount4/poidem-back/internal/api/v1"
+	"github.com/emount4/poidem-back/internal/catalog"
+	"github.com/emount4/poidem-back/internal/platform/logging"
 	"github.com/gin-gonic/gin"
 )
 
 func TestHealth(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
+	router := NewRouter(logging.New(&logs), testDependencies(nil))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/health", nil))
 	if response.Code != http.StatusOK || response.Body.String() != `{"status":"ok"}` {
@@ -33,11 +35,11 @@ func TestHealth(t *testing.T) {
 
 func TestRecovery(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
+	router := NewRouter(logging.New(&logs), testDependencies(nil))
 	router.GET("/panic", func(c *gin.Context) { panic("test panic") })
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/panic", nil))
-	if response.Code != http.StatusInternalServerError || response.Body.String() != `{"error":"internal server error"}` {
+	if response.Code != http.StatusInternalServerError || response.Body.String() != `{"error":{"code":"INTERNAL_ERROR","message":"Внутренняя ошибка сервера","details":{}}}` {
 		t.Fatalf("unexpected response: %d %s", response.Code, response.Body.String())
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
@@ -74,12 +76,14 @@ func TestReadiness(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			router := NewRouter(logger.New(&logs), func(ctx context.Context) error {
+			dependencies := testDependencies(nil)
+			dependencies.PingDatabase = func(ctx context.Context) error {
 				if _, ok := ctx.Deadline(); !ok {
 					t.Error("database readiness check must have a timeout")
 				}
 				return tc.err
-			})
+			}
+			router := NewRouter(logging.New(&logs), dependencies)
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/ready", nil))
 			if response.Code != tc.status {
@@ -89,5 +93,34 @@ func TestReadiness(t *testing.T) {
 				t.Fatal("readiness response exposes internal database error")
 			}
 		})
+	}
+}
+
+type dictionaryCatalogStub struct {
+	cities     []catalog.Item
+	interests  []catalog.Item
+	categories []catalog.Item
+	err        error
+}
+
+func (s dictionaryCatalogStub) Cities(context.Context) ([]catalog.Item, error) {
+	return s.cities, s.err
+}
+
+func (s dictionaryCatalogStub) Interests(context.Context) ([]catalog.Item, error) {
+	return s.interests, s.err
+}
+
+func (s dictionaryCatalogStub) EventCategories(context.Context) ([]catalog.Item, error) {
+	return s.categories, s.err
+}
+
+func testDependencies(catalog *dictionaryCatalogStub) Dependencies {
+	if catalog == nil {
+		catalog = &dictionaryCatalogStub{}
+	}
+	return Dependencies{
+		PingDatabase: func(context.Context) error { return nil },
+		V1:           v1.Dependencies{Catalog: catalog},
 	}
 }

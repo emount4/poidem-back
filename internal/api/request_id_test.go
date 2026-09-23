@@ -1,16 +1,15 @@
-package http
+package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/emount4/poidem-back/internal/logger"
-	"github.com/emount4/poidem-back/internal/requestid"
+	"github.com/emount4/poidem-back/internal/platform/logging"
+	"github.com/emount4/poidem-back/internal/platform/requestid"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,7 +32,7 @@ func TestRequestID(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var logs bytes.Buffer
-			router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
+			router := NewRouter(logging.New(&logs), testDependencies(nil))
 			var contextID, headerID string
 			router.GET("/id", func(c *gin.Context) {
 				contextID = requestid.FromContext(c.Request.Context())
@@ -78,7 +77,7 @@ func TestRequestID(t *testing.T) {
 
 func TestRequestIDOnNotFound(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
+	router := NewRouter(logging.New(&logs), testDependencies(nil))
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/missing", nil))
 	if response.Code != http.StatusNotFound || response.Header().Get("X-Request-ID") == "" {

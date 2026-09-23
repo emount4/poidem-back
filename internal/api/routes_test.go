@@ -1,19 +1,18 @@
-package http
+package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/emount4/poidem-back/internal/logger"
+	"github.com/emount4/poidem-back/internal/platform/logging"
 )
 
 func TestAPIV1(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
+	router := NewRouter(logging.New(&logs), testDependencies(nil))
 	req := httptest.NewRequest(http.MethodGet, "/api/v1", nil)
 	req.Header.Set("X-Request-ID", "api-v1-test")
 	response := httptest.NewRecorder()
@@ -35,7 +34,7 @@ func TestAPIV1(t *testing.T) {
 
 func TestUnknownAPIVersion(t *testing.T) {
 	var logs bytes.Buffer
-	router := NewRouter(logger.New(&logs), func(context.Context) error { return nil })
+	router := NewRouter(logging.New(&logs), testDependencies(nil))
 	for _, path := range []string{"/api/v2", "/api/v99", "/v1", "/api/v1/health", "/api/v1/ready"} {
 		t.Run(path, func(t *testing.T) {
 			response := httptest.NewRecorder()

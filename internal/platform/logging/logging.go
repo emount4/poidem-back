@@ -1,5 +1,5 @@
-// Package logger configures structured application logging.
-package logger
+// Package logging configures structured application logging.
+package logging
 
 import (
 	"io"

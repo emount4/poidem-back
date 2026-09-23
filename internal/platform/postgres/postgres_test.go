@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/emount4/poidem-back/internal/config"
+	"github.com/emount4/poidem-back/internal/platform/config"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 

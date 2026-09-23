@@ -8,14 +8,14 @@ import (
 	"syscall"
 
 	"github.com/emount4/poidem-back/internal/app"
-	"github.com/emount4/poidem-back/internal/logger"
+	"github.com/emount4/poidem-back/internal/platform/logging"
 )
 
 func main() {
 	configPath := flag.String("config", ".env", "path to .env config (empty: use environment only)")
 	flag.Parse()
 
-	log := logger.New(os.Stdout)
+	log := logging.New(os.Stdout)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
