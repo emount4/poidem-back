@@ -1,0 +1,10 @@
+extends:
+  - recommended
+
+rules:
+  # OAuth navigation intentionally returns 302, so a 2xx response is not valid there.
+  operation-2xx-response: off
+  # Some idempotent/public operations have no meaningful client-error response.
+  operation-4xx-response: off
+  # The private project has no public license URL.
+  info-license-strict: off

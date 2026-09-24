@@ -51,6 +51,11 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure OAuth login: %w", err)
 	}
+	authService := account.NewService(accessTokens, accountRepository)
+	profileService, err := account.NewProfileService(accountRepository, transactions)
+	if err != nil {
+		return fmt.Errorf("configure profiles: %w", err)
+	}
 	oauthFlow, err := accountoauth.NewFlow(cfg.OAuth.StateSecret, cfg.OAuth.FlowTTL)
 	if err != nil {
 		return fmt.Errorf("configure OAuth flow: %w", err)
@@ -82,6 +87,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 			CORSOrigin:   cfg.OAuth.FrontendOrigin,
 			V1: v1.Dependencies{
 				Catalog: catalogService, Sessions: refreshService, SessionCookies: refreshCookies,
+				Authenticator: authService, Profiles: profileService,
 				OAuth: accounthttp.OAuthRoutesConfig{
 					Providers: oauthProviders, Login: loginService, Flow: oauthFlow,
 					RefreshCookies: refreshCookies, FrontendURL: cfg.OAuth.FrontendURL,

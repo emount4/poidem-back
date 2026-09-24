@@ -71,14 +71,14 @@ credentials задаются окружением и не входят в API-к
       и согласованные решения; проверять YAML и локальные `$ref` контрактным тестом.
 - [x] Добавить отдельные partial PATCH-схемы для профиля, компании и admin-события;
       отразить nullable/required поля ответов и запрет null для обязательных значений.
-- [ ] Описать refresh-cookie, callback → frontend → refresh flow, TTL, ротацию,
+- [x] Описать refresh-cookie, callback → frontend → refresh flow, TTL, ротацию,
       logout и ошибки провайдеров. Добавить operationId и запрет токенов в URL.
 - [x] Унифицировать растущие списки: мои события/компании/заявки, участники,
       компании события, члены/заявки компании, admin users/companies/reports;
       добавить недостающие page/limit. Каталог и admin events уже имеют EventList.
-- [ ] Добавить `isProfileComplete`, relation, validation details, аватарный ответ
+- [x] Добавить `isProfileComplete`, relation, validation details, аватарный ответ
       и согласованные бизнес-ошибки.
-- [ ] Зафиксировать матрицу прав и переходы состояний; отправить фронтенду
+- [x] Зафиксировать матрицу прав и переходы состояний; отправить фронтенду
       итоговый OpenAPI вместе с [описанием изменений](frontend-handoff.md).
 
 Готовность: фронтенд и бэкенд используют один проверенный контракт; оставшиеся
@@ -123,9 +123,10 @@ credentials задаются окружением и не входят в API-к
 - [x] Refresh/logout usecase и HTTP endpoints: ротация, окно повторного запроса,
       HttpOnly cookie, настраиваемые Secure/SameSite/domain/path/TTL и очистка cookie.
       Provider tokens не подменяют токены приложения.
-- [ ] Logout текущей сессии, ban всех сессий; проверка актуального banned на каждом
-      защищённом запросе, чтобы действующий JWT не обходил бан.
-- [ ] GET auth/me и users/me на общем сервисе модуля account, частичный PATCH профиля
+- [x] Logout текущей сессии и проверка актуального banned на каждом защищённом
+      запросе, чтобы действующий JWT не обходил бан.
+- [ ] Admin ban: смена статуса и отзыв всех refresh-сессий одной транзакцией.
+- [x] GET auth/me и users/me на общем сервисе модуля account, частичный PATCH профиля
       и интересов одной транзакцией. Добавить backend-поле isProfileComplete; после
       onboarding запретить cityId=null и защищать действия через PROFILE_INCOMPLETE.
 - [x] FRONTEND_URL/API_URL/OAUTH_CALLBACK_URL; callback ставит cookie и перенаправляет
@@ -271,6 +272,6 @@ ban/block/delete имеют разные, протестированные по�
 
 ## Ближайшие задачи
 
-1. Дополнить OpenAPI operationId, полным mapping ошибок и матрицей прав по мере реализации.
-2. Реализовать auth/me, профиль и onboarding на текущей авторизации.
-3. Добавить служебное создание первого admin; Telegram и VK подключать через реестр провайдеров.
+1. Добавить admin ban/unban с отзывом всех refresh-сессий и служебное создание первого admin.
+2. Добавить CSRF-защиту для настраиваемого cross-site cookie-режима.
+3. После этапа авторизации перейти к созданию и модерации событий; Telegram и VK подключать через реестр провайдеров.

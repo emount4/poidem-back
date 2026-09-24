@@ -21,8 +21,10 @@ func TestOpenAPIContract(t *testing.T) {
 		t.Fatalf("unexpected OpenAPI version: %v", document["openapi"])
 	}
 	assertLocalReferences(t, document, document)
+	assertOperations(t, document)
 
 	checks := map[string]string{
+		"/events":                             "#/components/schemas/EventList",
 		"/users/me/events":                    "#/components/schemas/MyEventList",
 		"/users/me/companies":                 "#/components/schemas/CompanyList",
 		"/users/me/applications":              "#/components/schemas/ApplicationList",
@@ -40,6 +42,58 @@ func TestOpenAPIContract(t *testing.T) {
 		if got != want {
 			t.Errorf("GET %s response schema = %q, want %q", path, got, want)
 		}
+	}
+}
+
+func assertOperations(t *testing.T, document map[string]any) {
+	t.Helper()
+	methods := map[string]bool{"get": true, "post": true, "put": true, "patch": true, "delete": true}
+	knownCodes := map[string]bool{}
+	schemas := document["components"].(map[string]any)["schemas"].(map[string]any)
+	for _, value := range schemas["ErrorCode"].(map[string]any)["enum"].([]any) {
+		knownCodes[value.(string)] = true
+	}
+	operationIDs := map[string]string{}
+	knownTags := map[string]bool{}
+	for _, rawTag := range document["tags"].([]any) {
+		knownTags[rawTag.(map[string]any)["name"].(string)] = true
+	}
+	for path, rawPath := range document["paths"].(map[string]any) {
+		for method, rawOperation := range rawPath.(map[string]any) {
+			if !methods[method] {
+				continue
+			}
+			operation := rawOperation.(map[string]any)
+			operationID, ok := operation["operationId"].(string)
+			if !ok || operationID == "" {
+				t.Errorf("%s %s has no operationId", method, path)
+				continue
+			}
+			if previous, exists := operationIDs[operationID]; exists {
+				t.Errorf("duplicate operationId %q on %s %s and %s", operationID, method, path, previous)
+			}
+			operationIDs[operationID] = method + " " + path
+			tags, ok := operation["tags"].([]any)
+			if !ok || len(tags) != 1 || !knownTags[tags[0].(string)] {
+				t.Errorf("%s %s must have one declared tag", method, path)
+			}
+			responses := operation["responses"].(map[string]any)
+			mappings, _ := operation["x-error-codes"].(map[string]any)
+			for status, rawCodes := range mappings {
+				if _, exists := responses[status]; !exists {
+					t.Errorf("%s %s maps error status %s without documenting its response", method, path, status)
+				}
+				for _, rawCode := range rawCodes.([]any) {
+					code := rawCode.(string)
+					if !knownCodes[code] {
+						t.Errorf("%s %s uses unknown error code %s", method, path, code)
+					}
+				}
+			}
+		}
+	}
+	if len(operationIDs) != 53 {
+		t.Errorf("operation count = %d, want 53", len(operationIDs))
 	}
 }
 

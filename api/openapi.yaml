@@ -2,27 +2,57 @@ openapi: 3.0.3
 info:
   title: Poydem API
   version: 1.0.0
-  description: MVP API contract for the Poydem event and company service.
+  license:
+    name: Proprietary
+  description: |
+    Final frontend/backend contract for Poydem MVP API v1.
+
+    All enum values use lower-case except stable error and system-reason codes,
+    which use UPPER_SNAKE_CASE. Every JSON response uses UTF-8. Every response
+    includes X-Request-ID. Timestamps are RFC 3339 date-time values with an offset.
+
+    Access tokens are sent as Bearer JWTs. Refresh tokens exist only in an HttpOnly
+    cookie and are never returned in JSON or URLs. Lists documented with pagination
+    return `items: []` and `totalPages: 0` when empty. Unexpected server failures
+    return HTTP 500 with error.code `INTERNAL_ERROR` in the common error envelope.
 servers:
   - url: /api/v1
+tags:
+  - {name: Auth, description: OAuth and token lifecycle}
+  - {name: Users, description: Current user profile and personal lists}
+  - {name: Catalog, description: Public dictionaries}
+  - {name: Events, description: Event catalog and participation}
+  - {name: Companies, description: "Companies, members and applications"}
+  - {name: Reports, description: User reports}
+  - {name: Admin, description: Administrative operations; requires role admin}
 security:
   - bearerAuth: []
 
 paths:
   /auth/{provider}:
     get:
+      operationId: startOAuth
+      tags: [Auth]
       security: []
       summary: Start OAuth authentication
+      x-error-codes:
+        '503': [OAUTH_PROVIDER_UNAVAILABLE]
       parameters:
         - $ref: '#/components/parameters/Provider'
       responses:
-        '302': {description: Redirect to OAuth provider}
-        '503':
-          description: Provider is not configured
+        '302':
+          description: Redirect to OAuth provider
+          headers:
+            Location: {description: Provider authorization URL, schema: {type: string, format: uri}}
+            Set-Cookie: {description: Signed HttpOnly OAuth flow cookie containing state and PKCE verifier, schema: {type: string}}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
   /auth/{provider}/callback:
     get:
+      operationId: handleOAuthCallback
+      tags: [Auth]
       security: []
       summary: OAuth callback
+      description: On success sets the refresh cookie and redirects to `${FRONTEND_URL}/auth/callback`; every failure redirects to `${FRONTEND_URL}/auth/error`. Tokens are never placed in the URL.
       parameters:
         - $ref: '#/components/parameters/Provider'
         - {name: code, in: query, required: false, description: Authorization code on success, schema: {type: string}}
@@ -31,9 +61,17 @@ paths:
       responses:
         '302':
           description: Refresh cookie is set; redirects to frontend auth callback or error page. Tokens are never included in the URL.
+          headers:
+            Location: {description: Frontend auth callback or error URL, schema: {type: string, format: uri}}
+            Set-Cookie: {description: On success sets refresh_token; always clears the one-time OAuth flow cookie, schema: {type: string}}
   /auth/me:
     get:
+      operationId: getCurrentUser
+      tags: [Auth]
       summary: Current user
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       responses:
         '200':
           description: Current user
@@ -41,37 +79,65 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/User'}
         '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /auth/refresh:
     post:
-      security: []
+      operationId: refreshAccessToken
+      tags: [Auth]
+      security:
+        - refreshCookie: []
       summary: Refresh access token
+      description: Rotates the HttpOnly refresh cookie. A short retry window returns a valid rotation result when a browser repeats the same request after losing the first response.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
       responses:
         '200':
           description: Refresh cookie is rotated and a new access token is returned
+          headers:
+            Set-Cookie: {description: Rotated HttpOnly refresh_token cookie, schema: {type: string}}
           content:
             application/json:
-              schema:
-                type: object
-                properties: {accessToken: {type: string}}
+              schema: {$ref: '#/components/schemas/RefreshResponse'}
         '401': {$ref: '#/components/responses/Unauthorized'}
   /auth/logout:
     post:
-      security: []
+      operationId: logout
+      tags: [Auth]
+      security:
+        - refreshCookie: []
       summary: Logout
+      description: Revokes the current refresh session and clears its cookie. The frontend must immediately discard the in-memory access token.
       responses:
-        '204': {description: Current refresh session is revoked and its cookie is cleared}
+        '204':
+          description: Current refresh session is revoked and its cookie is cleared
+          headers:
+            Set-Cookie: {description: Clears refresh_token, schema: {type: string}}
 
   /users/me:
     get:
+      operationId: getMyProfile
+      tags: [Users]
       summary: Get profile
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       responses:
         '200':
           description: Profile
           content:
             application/json:
               schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
     patch:
+      operationId: updateMyProfile
+      tags: [Users]
       summary: Update profile
+      description: Omitted fields remain unchanged. Null clears only nullable fields. An empty interestIds array removes all interests.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       requestBody:
         required: true
         content:
@@ -84,15 +150,28 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/User'}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /users/me/avatar:
     post:
+      operationId: uploadMyAvatar
+      tags: [Users]
       summary: Upload avatar
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
+        '413': [AVATAR_TOO_LARGE]
+        '415': [UNSUPPORTED_AVATAR_TYPE]
+        '500': [AVATAR_UPLOAD_FAILED]
+        '503': [AVATAR_UPLOAD_FAILED]
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
+              required: [file]
+              additionalProperties: false
               properties: {file: {type: string, format: binary}}
       responses:
         '200':
@@ -102,13 +181,31 @@ paths:
               schema: {$ref: '#/components/schemas/AvatarResponse'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '503': {$ref: '#/components/responses/ServiceUnavailable'}
     delete:
+      operationId: deleteMyAvatar
+      tags: [Users]
       summary: Delete avatar
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       responses:
         '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /users/me/events:
     get:
+      operationId: listMyEvents
+      tags: [Users]
       summary: My events
+      description: Returns the union of created and joined events without duplicates. Ongoing events are included in upcoming.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       parameters:
         - {name: status, in: query, schema: {type: string, enum: [upcoming, past]}}
         - {$ref: '#/components/parameters/Page'}
@@ -119,9 +216,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MyEventList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /users/me/companies:
     get:
+      operationId: listMyCompanies
+      tags: [Users]
       summary: My companies
+      description: Returns current, non-deleted company memberships. A blocked company remains visible to its current members and owner with status blocked.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit'}
@@ -131,9 +238,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CompanyList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /users/me/applications:
     get:
+      operationId: listMyApplications
+      tags: [Users]
       summary: My applications
+      description: Paginated application history across all statuses, including old rejected and cancelled records.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit'}
@@ -143,9 +260,14 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ApplicationList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
 
   /cities:
     get:
+      operationId: listCities
+      tags: [Catalog]
       security: []
       summary: Cities
       responses:
@@ -156,6 +278,8 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
   /interests:
     get:
+      operationId: listInterests
+      tags: [Catalog]
       security: []
       summary: Interests
       responses:
@@ -166,6 +290,8 @@ paths:
               schema: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
   /event-categories:
     get:
+      operationId: listEventCategories
+      tags: [Catalog]
       security: []
       summary: Event categories
       responses:
@@ -177,8 +303,13 @@ paths:
 
   /events:
     get:
+      operationId: listEvents
+      tags: [Events]
       security: []
       summary: Search events
+      description: Returns active events that have not completed. Ongoing events remain visible. Default order is startsAt ASC, id ASC; popular is participantsCount DESC, id ASC.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
       parameters:
         - {name: search, in: query, schema: {type: string}}
         - {name: cityId, in: query, schema: {type: integer, format: int64}}
@@ -194,8 +325,16 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/EventList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
     post:
+      operationId: createEvent
+      tags: [Events]
       summary: Create event
+      description: Creates an event in pending status.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
       requestBody:
         required: true
         content:
@@ -208,10 +347,19 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Event'}
         '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /events/{eventId}:
     get:
-      security: []
+      operationId: getEvent
+      tags: [Events]
+      security:
+        - {}
+        - bearerAuth: []
       summary: Event details
+      description: Public users see active non-completed events. The creator may also see their own pending or rejected event.
+      x-error-codes:
+        '404': [EVENT_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/EventId'}]
       responses:
         '200':
@@ -222,8 +370,15 @@ paths:
         '404': {$ref: '#/components/responses/NotFound'}
   /events/{eventId}/participants:
     get:
-      security: []
+      operationId: listEventParticipants
+      tags: [Events]
+      security:
+        - {}
+        - bearerAuth: []
       summary: Event participants
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '404': [EVENT_NOT_FOUND]
       parameters:
         - {$ref: '#/components/parameters/EventId'}
         - {$ref: '#/components/parameters/Page'}
@@ -234,10 +389,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/UserShortList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /events/{eventId}/companies:
     get:
-      security: []
+      operationId: listEventCompanies
+      tags: [Events]
+      security:
+        - {}
+        - bearerAuth: []
       summary: Event companies
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '404': [EVENT_NOT_FOUND]
       parameters:
         - {$ref: '#/components/parameters/EventId'}
         - {$ref: '#/components/parameters/Page'}
@@ -248,8 +412,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CompanyList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
     post:
+      operationId: createCompany
+      tags: [Companies]
       summary: Create company
+      description: Atomically creates the company, adds the creator as owner/member, and records their event participation. The owner counts toward maxMembers.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '404': [EVENT_NOT_FOUND]
+        '409': [EVENT_NOT_AVAILABLE, ALREADY_IN_EVENT_COMPANY]
       parameters: [{$ref: '#/components/parameters/EventId'}]
       requestBody:
         required: true
@@ -262,23 +437,56 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Company'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /events/{eventId}/solo-participation:
     post:
+      operationId: joinEventSolo
+      tags: [Events]
       summary: Join event solo
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '404': [EVENT_NOT_FOUND]
+        '409': [EVENT_NOT_AVAILABLE, ALREADY_EVENT_PARTICIPANT, ALREADY_IN_EVENT_COMPANY]
       parameters: [{$ref: '#/components/parameters/EventId'}]
       responses:
         '201': {description: Joined}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
     delete:
+      operationId: cancelSoloParticipation
+      tags: [Events]
       summary: Cancel solo participation
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
+        '404': [EVENT_NOT_FOUND]
+        '409': [NOT_SOLO_PARTICIPANT]
       parameters: [{$ref: '#/components/parameters/EventId'}]
       responses:
         '204': {description: Cancelled}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /companies/{companyId}:
     get:
-      security: []
+      operationId: getCompany
+      tags: [Companies]
+      security:
+        - {}
+        - bearerAuth: []
       summary: Company details
+      description: Deleted companies are never returned. Blocked companies are visible only to current members, the owner, and admins.
+      x-error-codes:
+        '404': [COMPANY_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
         '200':
@@ -286,8 +494,17 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Company'}
+        '404': {$ref: '#/components/responses/NotFound'}
     patch:
+      operationId: updateCompany
+      tags: [Companies]
       summary: Update company
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [COMPANY_BLOCKED, EVENT_NOT_AVAILABLE, COMPANY_CAPACITY_BELOW_MEMBERS]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       requestBody:
         required: true
@@ -301,15 +518,36 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Company'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
     delete:
+      operationId: deleteCompany
+      tags: [Companies]
       summary: Delete company
+      description: Soft-deletes the company, cancels pending applications, and removes event participation linked to this company in one transaction.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
         '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /companies/{companyId}/members:
     get:
-      security: []
+      operationId: listCompanyMembers
+      tags: [Companies]
+      security:
+        - {}
+        - bearerAuth: []
       summary: Company members
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '404': [COMPANY_NOT_FOUND]
       parameters:
         - {$ref: '#/components/parameters/CompanyId'}
         - {$ref: '#/components/parameters/Page'}
@@ -320,44 +558,114 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/UserShortList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /companies/{companyId}/members/me:
     delete:
+      operationId: leaveCompany
+      tags: [Companies]
       summary: Leave company
+      description: Removes both company membership and event participation. It never converts the user to solo participation.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [OWNER_CANNOT_LEAVE, NOT_COMPANY_MEMBER]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
         '204': {description: Left}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /companies/{companyId}/members/{userId}:
     delete:
+      operationId: removeCompanyMember
+      tags: [Companies]
       summary: Remove member
+      description: Removes both company membership and event participation in one transaction.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND, USER_NOT_FOUND]
+        '409': [OWNER_CANNOT_BE_REMOVED, NOT_COMPANY_MEMBER]
       parameters:
         - {$ref: '#/components/parameters/CompanyId'}
         - {$ref: '#/components/parameters/UserId'}
       responses:
         '204': {description: Removed}
+        '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /companies/{companyId}/join:
     post:
+      operationId: joinOpenCompany
+      tags: [Companies]
       summary: Join open company
+      description: Atomically joins an open company and changes existing solo participation to company participation when needed.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [COMPANY_FULL, COMPANY_CLOSED, EVENT_NOT_AVAILABLE, ALREADY_COMPANY_MEMBER, ALREADY_IN_EVENT_COMPANY]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
         '201': {description: Joined}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
   /companies/{companyId}/close:
     post:
+      operationId: closeCompanyRecruitment
+      tags: [Companies]
       summary: Close recruitment
+      description: Prevents new joins and applications. Existing pending applications may still be approved or rejected.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [COMPANY_BLOCKED]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
-        '200': {description: Closed}
+        '200':
+          description: Closed
+          content: {application/json: {schema: {$ref: '#/components/schemas/Company'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /companies/{companyId}/open:
     post:
+      operationId: openCompanyRecruitment
+      tags: [Companies]
       summary: Open recruitment
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [COMPANY_BLOCKED, EVENT_NOT_AVAILABLE]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
-        '200': {description: Opened}
+        '200':
+          description: Opened
+          content: {application/json: {schema: {$ref: '#/components/schemas/Company'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /companies/{companyId}/applications:
     get:
+      operationId: listCompanyApplications
+      tags: [Companies]
       summary: Company applications
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND]
       parameters:
         - {$ref: '#/components/parameters/CompanyId'}
         - {name: status, in: query, schema: {$ref: '#/components/schemas/ApplicationStatus'}}
@@ -369,25 +677,47 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ApplicationList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
     post:
+      operationId: createCompanyApplication
+      tags: [Companies]
       summary: Apply to company
+      description: Creates a new pending application. Re-applying after rejection or cancellation creates a new historical record.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [APPLICATION_ALREADY_EXISTS, COMPANY_CLOSED, EVENT_NOT_AVAILABLE, ALREADY_COMPANY_MEMBER, ALREADY_IN_EVENT_COMPANY]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       requestBody:
         content:
           application/json:
-            schema:
-              type: object
-              properties: {message: {type: string, maxLength: 1000}}
+            schema: {$ref: '#/components/schemas/ApplicationInput'}
       responses:
         '201':
           description: Created
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Application'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
   /companies/{companyId}/applications/me:
     get:
+      operationId: getMyCompanyApplication
+      tags: [Companies]
       summary: My application
+      description: Returns the current pending application; if none exists, returns the latest historical application by createdAt DESC, id DESC.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
+        '404': [COMPANY_NOT_FOUND, APPLICATION_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
         '200':
@@ -396,14 +726,35 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Application'}
         '404': {$ref: '#/components/responses/NotFound'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
     delete:
+      operationId: cancelMyCompanyApplication
+      tags: [Companies]
       summary: Cancel application
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
+        '404': [COMPANY_NOT_FOUND, APPLICATION_NOT_FOUND]
+        '409': [APPLICATION_ALREADY_RESOLVED]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
         '204': {description: Cancelled}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /companies/{companyId}/applications/{applicationId}/approve:
     post:
+      operationId: approveCompanyApplication
+      tags: [Companies]
       summary: Approve application
+      description: Atomically approves the application, adds membership, and records company participation. Capacity and event/company state are checked again under locks.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND, APPLICATION_NOT_FOUND]
+        '409': [APPLICATION_ALREADY_RESOLVED, COMPANY_FULL, COMPANY_BLOCKED, EVENT_NOT_AVAILABLE, ALREADY_COMPANY_MEMBER, ALREADY_IN_EVENT_COMPANY]
       parameters:
         - {$ref: '#/components/parameters/CompanyId'}
         - {$ref: '#/components/parameters/ApplicationId'}
@@ -414,9 +765,19 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Application'}
         '409': {$ref: '#/components/responses/Conflict'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /companies/{companyId}/applications/{applicationId}/reject:
     post:
+      operationId: rejectCompanyApplication
+      tags: [Companies]
       summary: Reject application
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '404': [COMPANY_NOT_FOUND, APPLICATION_NOT_FOUND]
+        '409': [APPLICATION_ALREADY_RESOLVED]
       parameters:
         - {$ref: '#/components/parameters/CompanyId'}
         - {$ref: '#/components/parameters/ApplicationId'}
@@ -426,10 +787,21 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Application'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /reports:
     post:
+      operationId: createReport
+      tags: [Reports]
       summary: Create report
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '404': [REPORT_TARGET_NOT_FOUND]
       requestBody:
         required: true
         content:
@@ -441,10 +813,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Report'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /admin/dashboard:
     get:
+      operationId: getAdminDashboard
+      tags: [Admin]
       summary: Admin dashboard
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
       responses:
         '200':
           description: Statistics
@@ -452,9 +833,16 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/AdminDashboard'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
   /admin/users:
     get:
+      operationId: listAdminUsers
+      tags: [Admin]
       summary: Admin users
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
       parameters:
         - {name: search, in: query, schema: {type: string}}
         - {$ref: '#/components/parameters/Page'}
@@ -465,9 +853,18 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/UserList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /admin/users/{userId}:
     get:
+      operationId: getAdminUser
+      tags: [Admin]
       summary: Admin user details
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [USER_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/UserId'}]
       responses:
         '200':
@@ -475,22 +872,55 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /admin/users/{userId}/ban:
     post:
+      operationId: banUser
+      tags: [Admin]
       summary: Ban user
+      description: Sets status to banned and revokes every active refresh session of the user in one transaction.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [USER_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/UserId'}]
       responses:
-        '200': {description: Banned}
+        '200':
+          description: Banned
+          content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /admin/users/{userId}/unban:
     post:
+      operationId: unbanUser
+      tags: [Admin]
       summary: Unban user
+      description: Restores active status but does not recreate revoked sessions.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [USER_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/UserId'}]
       responses:
-        '200': {description: Unbanned}
+        '200':
+          description: Unbanned
+          content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /admin/events:
     get:
+      operationId: listAdminEvents
+      tags: [Admin]
       summary: Admin events
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
       parameters:
         - {name: search, in: query, schema: {type: string}}
         - {name: status, in: query, schema: {$ref: '#/components/schemas/EventStatus'}}
@@ -502,9 +932,18 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/EventList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /admin/events/{eventId}:
     get:
+      operationId: getAdminEvent
+      tags: [Admin]
       summary: Admin event details
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [EVENT_NOT_FOUND]
       parameters: [{$ref: '#/components/parameters/EventId'}]
       responses:
         '200':
@@ -512,8 +951,19 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Event'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
     patch:
+      operationId: updateAdminEvent
+      tags: [Admin]
       summary: Admin update event
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [EVENT_NOT_FOUND]
+        '409': [INVALID_STATUS_TRANSITION]
       parameters: [{$ref: '#/components/parameters/EventId'}]
       requestBody:
         required: true
@@ -526,18 +976,43 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Event'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
   /admin/events/{eventId}/{action}:
     post:
+      operationId: moderateEvent
+      tags: [Admin]
       summary: Moderate event
+      description: Allowed transitions are pending to active/rejected and active to blocked. Completion is performed by the system clock rule.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [EVENT_NOT_FOUND]
+        '409': [INVALID_STATUS_TRANSITION]
       parameters:
         - {$ref: '#/components/parameters/EventId'}
         - {name: action, in: path, required: true, schema: {type: string, enum: [approve, reject, block]}}
       responses:
-        '200': {description: Status changed}
+        '200':
+          description: Status changed
+          content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /admin/companies:
     get:
+      operationId: listAdminCompanies
+      tags: [Admin]
       summary: Admin companies
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit'}
@@ -547,16 +1022,39 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/CompanyList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /admin/companies/{companyId}/block:
     post:
+      operationId: blockCompany
+      tags: [Admin]
       summary: Block company
+      description: Hides the company from outsiders, preserves members and their participation, and cancels pending applications with resolutionReason COMPANY_BLOCKED.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [COMPANY_NOT_FOUND]
+        '409': [COMPANY_BLOCKED]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
       responses:
-        '200': {description: Blocked}
+        '200':
+          description: Blocked
+          content: {application/json: {schema: {$ref: '#/components/schemas/Company'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /admin/reports:
     get:
+      operationId: listAdminReports
+      tags: [Admin]
       summary: Admin reports
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
       parameters:
         - {name: status, in: query, schema: {type: string, enum: [pending, resolved, rejected]}}
         - {$ref: '#/components/parameters/Page'}
@@ -567,9 +1065,18 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/ReportList'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /admin/reports/{reportId}:
     get:
+      operationId: getAdminReport
+      tags: [Admin]
       summary: Admin report details
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [REPORT_NOT_FOUND]
       parameters:
         - {name: reportId, in: path, required: true, schema: {type: integer, format: int64}}
       responses:
@@ -578,44 +1085,65 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Report'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /admin/reports/{reportId}/{action}:
     post:
+      operationId: moderateReport
+      tags: [Admin]
       summary: Resolve or reject report
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, FORBIDDEN]
+        '404': [REPORT_NOT_FOUND]
+        '409': [REPORT_ALREADY_RESOLVED]
       parameters:
         - {name: reportId, in: path, required: true, schema: {type: integer, format: int64}}
         - {name: action, in: path, required: true, schema: {type: string, enum: [resolve, reject]}}
       responses:
-        '200': {description: Processed}
+        '200':
+          description: Processed
+          content: {application/json: {schema: {$ref: '#/components/schemas/Report'}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, bearerFormat: JWT}
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: HttpOnly cookie managed by the browser; JavaScript cannot read it
   parameters:
     Provider:
       name: provider
       in: path
       required: true
-      schema: {type: string, enum: [google, vk, telegram]}
+      schema: {type: string, enum: [google, telegram, vk]}
     EventId:
       name: eventId
       in: path
       required: true
-      schema: {type: integer, format: int64}
+      schema: {type: integer, format: int64, minimum: 1}
     CompanyId:
       name: companyId
       in: path
       required: true
-      schema: {type: integer, format: int64}
+      schema: {type: integer, format: int64, minimum: 1}
     UserId:
       name: userId
       in: path
       required: true
-      schema: {type: integer, format: int64}
+      schema: {type: integer, format: int64, minimum: 1}
     ApplicationId:
       name: applicationId
       in: path
       required: true
-      schema: {type: integer, format: int64}
+      schema: {type: integer, format: int64, minimum: 1}
     Page:
       name: page
       in: query
@@ -646,46 +1174,63 @@ components:
     UnsupportedMediaType:
       description: Avatar must be image/jpeg, image/png or image/webp
       content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    InternalError:
+      description: Internal server error
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
+    ServiceUnavailable:
+      description: Temporarily unavailable
+      content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}
   schemas:
     DictionaryItem:
       type: object
+      required: [id, name, slug]
+      additionalProperties: false
       properties:
-        id: {type: integer, format: int64}
-        name: {type: string}
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1}
         slug: {type: string, nullable: true}
     UserShort:
       type: object
+      required: [id, firstName, lastName, avatarUrl]
       properties:
-        id: {type: integer, format: int64}
+        id: {type: integer, format: int64, minimum: 1}
         firstName: {type: string}
         lastName: {type: string, nullable: true}
-        avatarUrl: {type: string, nullable: true}
+        avatarUrl: {type: string, format: uri, nullable: true}
     User:
       allOf:
         - {$ref: '#/components/schemas/UserShort'}
         - type: object
-          required: [city, interests, role, status, isProfileComplete, createdAt]
+          required: [city, about, interests, role, status, isProfileComplete, createdAt]
           properties:
             city:
+              type: object
               nullable: true
               allOf: [{$ref: '#/components/schemas/DictionaryItem'}]
             about: {type: string, nullable: true}
             interests: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
-            role: {type: string, enum: [user, admin]}
-            status: {type: string, enum: [active, banned]}
+            role: {$ref: '#/components/schemas/UserRole'}
+            status: {$ref: '#/components/schemas/UserStatus'}
             isProfileComplete:
               type: boolean
               description: Calculated by backend as non-empty firstName and non-null city
             createdAt: {type: string, format: date-time}
+    UserRole:
+      type: string
+      enum: [user, admin]
+    UserStatus:
+      type: string
+      enum: [active, banned]
     UpdateProfile:
       type: object
+      additionalProperties: false
       description: Omitted fields are unchanged; null clears only nullable fields. cityId cannot be cleared after onboarding is complete.
       properties:
         firstName: {type: string, minLength: 1, maxLength: 100}
         lastName: {type: string, maxLength: 100, nullable: true}
-        cityId: {type: integer, format: int64, nullable: true}
+        cityId: {type: integer, format: int64, minimum: 1, nullable: true}
         about: {type: string, maxLength: 2000, nullable: true}
-        interestIds: {type: array, uniqueItems: true, items: {type: integer, format: int64}}
+        interestIds: {type: array, uniqueItems: true, items: {type: integer, format: int64, minimum: 1}}
     EventStatus:
       type: string
       enum: [pending, active, rejected, blocked, completed]
@@ -693,38 +1238,42 @@ components:
       type: object
       required: [title, categoryId, cityId, startsAt, locationName]
       properties:
-        title: {type: string, maxLength: 200}
-        description: {type: string, maxLength: 5000}
-        categoryId: {type: integer, format: int64}
-        cityId: {type: integer, format: int64}
-        startsAt: {type: string, format: date-time}
-        endsAt: {type: string, format: date-time}
-        locationName: {type: string, maxLength: 255}
-        address: {type: string, maxLength: 500}
-        imageUrl: {type: string}
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 5000, nullable: true}
+        categoryId: {type: integer, format: int64, minimum: 1}
+        cityId: {type: integer, format: int64, minimum: 1}
+        startsAt: {type: string, format: date-time, description: RFC 3339 value with an explicit timezone offset}
+        endsAt: {type: string, format: date-time, nullable: true, description: Must be later than startsAt when present}
+        locationName: {type: string, minLength: 1, maxLength: 255}
+        address: {type: string, maxLength: 500, nullable: true}
+        imageUrl: {type: string, format: uri, nullable: true}
     UpdateEvent:
       type: object
+      additionalProperties: false
       description: Partial admin update; omitted fields are unchanged
       properties:
-        title: {type: string, maxLength: 200}
+        title: {type: string, minLength: 1, maxLength: 200}
         description: {type: string, maxLength: 5000, nullable: true}
-        categoryId: {type: integer, format: int64}
-        cityId: {type: integer, format: int64}
+        categoryId: {type: integer, format: int64, minimum: 1}
+        cityId: {type: integer, format: int64, minimum: 1}
         startsAt: {type: string, format: date-time}
         endsAt: {type: string, format: date-time, nullable: true}
-        locationName: {type: string, maxLength: 255}
+        locationName: {type: string, minLength: 1, maxLength: 255}
         address: {type: string, maxLength: 500, nullable: true}
-        imageUrl: {type: string, nullable: true}
+        imageUrl: {type: string, format: uri, nullable: true}
     Event:
       allOf:
         - {$ref: '#/components/schemas/EventInput'}
         - type: object
+          required: [id, description, endsAt, address, imageUrl, status, participantsCount, companiesCount, creator, createdAt, updatedAt]
           properties:
-            id: {type: integer, format: int64}
+            id: {type: integer, format: int64, minimum: 1}
             status: {$ref: '#/components/schemas/EventStatus'}
-            participantsCount: {type: integer}
-            companiesCount: {type: integer}
+            participantsCount: {type: integer, minimum: 0}
+            companiesCount: {type: integer, minimum: 0}
             creator: {$ref: '#/components/schemas/UserShort'}
+            createdAt: {type: string, format: date-time}
+            updatedAt: {type: string, format: date-time}
     EventList:
       type: object
       required: [items, pagination]
@@ -748,42 +1297,63 @@ components:
       type: object
       required: [name, maxMembers, joinType]
       properties:
-        name: {type: string, maxLength: 150}
-        description: {type: string, maxLength: 2000}
-        maxMembers: {type: integer, minimum: 2, maximum: 100}
-        joinType: {type: string, enum: [open, request]}
-        rules: {type: string, maxLength: 2000}
-    UpdateCompany:
-      type: object
-      description: Partial update; omitted fields are unchanged
-      properties:
-        name: {type: string, maxLength: 150}
+        name: {type: string, minLength: 1, maxLength: 150}
         description: {type: string, maxLength: 2000, nullable: true}
         maxMembers: {type: integer, minimum: 2, maximum: 100}
-        joinType: {type: string, enum: [open, request]}
+        joinType: {$ref: '#/components/schemas/JoinType'}
+        rules: {type: string, maxLength: 2000, nullable: true}
+    JoinType:
+      type: string
+      enum: [open, request]
+    UpdateCompany:
+      type: object
+      additionalProperties: false
+      description: Partial update; omitted fields are unchanged
+      properties:
+        name: {type: string, minLength: 1, maxLength: 150}
+        description: {type: string, maxLength: 2000, nullable: true}
+        maxMembers: {type: integer, minimum: 2, maximum: 100}
+        joinType: {$ref: '#/components/schemas/JoinType'}
         rules: {type: string, maxLength: 2000, nullable: true}
     Company:
       allOf:
         - {$ref: '#/components/schemas/CompanyInput'}
         - type: object
+          required: [id, eventId, description, rules, owner, membersCount, status, createdAt, updatedAt]
           properties:
-            id: {type: integer, format: int64}
-            eventId: {type: integer, format: int64}
+            id: {type: integer, format: int64, minimum: 1}
+            eventId: {type: integer, format: int64, minimum: 1}
             owner: {$ref: '#/components/schemas/UserShort'}
-            membersCount: {type: integer}
-            status: {type: string, enum: [active, closed, blocked]}
+            membersCount: {type: integer, minimum: 1}
+            status: {$ref: '#/components/schemas/CompanyStatus'}
             createdAt: {type: string, format: date-time}
+            updatedAt: {type: string, format: date-time}
+    CompanyStatus:
+      type: string
+      enum: [active, closed, blocked]
     ApplicationStatus:
       type: string
       enum: [pending, approved, rejected, cancelled]
+    ApplicationInput:
+      type: object
+      additionalProperties: false
+      properties:
+        message: {type: string, maxLength: 1000, nullable: true}
+    ApplicationResolutionReason:
+      type: string
+      nullable: true
+      enum: [COMPANY_BLOCKED, EVENT_COMPLETED]
     Application:
       type: object
+      required: [id, companyId, user, message, status, resolutionReason, createdAt, resolvedAt]
+      additionalProperties: false
       properties:
-        id: {type: integer, format: int64}
-        companyId: {type: integer, format: int64}
+        id: {type: integer, format: int64, minimum: 1}
+        companyId: {type: integer, format: int64, minimum: 1}
         user: {$ref: '#/components/schemas/UserShort'}
         message: {type: string, nullable: true}
         status: {$ref: '#/components/schemas/ApplicationStatus'}
+        resolutionReason: {$ref: '#/components/schemas/ApplicationResolutionReason'}
         createdAt: {type: string, format: date-time}
         resolvedAt: {type: string, format: date-time, nullable: true}
     CompanyList:
@@ -815,18 +1385,24 @@ components:
       required: [targetType, targetId, reason]
       properties:
         targetType: {type: string, enum: [user, company, event]}
-        targetId: {type: integer, format: int64}
-        reason: {type: string, maxLength: 100}
-        description: {type: string, maxLength: 2000}
+        targetId: {type: integer, format: int64, minimum: 1}
+        reason: {type: string, minLength: 1, maxLength: 100}
+        description: {type: string, maxLength: 2000, nullable: true}
     Report:
       allOf:
         - {$ref: '#/components/schemas/ReportInput'}
         - type: object
+          required: [id, description, author, status, resolvedBy, createdAt, resolvedAt]
           properties:
-            id: {type: integer, format: int64}
+            id: {type: integer, format: int64, minimum: 1}
             author: {$ref: '#/components/schemas/UserShort'}
             status: {type: string, enum: [pending, resolved, rejected]}
+            resolvedBy:
+              type: object
+              nullable: true
+              allOf: [{$ref: '#/components/schemas/UserShort'}]
             createdAt: {type: string, format: date-time}
+            resolvedAt: {type: string, format: date-time, nullable: true}
     ReportList:
       type: object
       required: [items, pagination]
@@ -835,11 +1411,19 @@ components:
         pagination: {$ref: '#/components/schemas/Pagination'}
     AdminDashboard:
       type: object
+      required: [usersTotal, activeEvents, pendingReports, newRegistrations30d]
+      additionalProperties: false
       properties:
-        usersTotal: {type: integer}
-        activeEvents: {type: integer}
-        pendingReports: {type: integer}
-        newRegistrations30d: {type: integer, description: Registrations during the last 30 calendar days including today}
+        usersTotal: {type: integer, minimum: 0}
+        activeEvents: {type: integer, minimum: 0}
+        pendingReports: {type: integer, minimum: 0}
+        newRegistrations30d: {type: integer, minimum: 0, description: Registrations during the last 30 calendar days including today}
+    RefreshResponse:
+      type: object
+      required: [accessToken]
+      additionalProperties: false
+      properties:
+        accessToken: {type: string, minLength: 1, description: Bearer JWT with a 15 minute default lifetime}
     AvatarResponse:
       type: object
       required: [avatarUrl]
@@ -856,18 +1440,62 @@ components:
     ErrorResponse:
       type: object
       required: [error]
+      additionalProperties: false
       properties:
         error:
           type: object
           required: [code, message, details]
+          additionalProperties: false
           properties:
-            code:
-              type: string
-              example: COMPANY_FULL
-              description: Stable UPPER_SNAKE_CASE business code, including PROFILE_INCOMPLETE, OWNER_CANNOT_LEAVE and ALREADY_IN_EVENT_COMPANY
+            code: {$ref: '#/components/schemas/ErrorCode'}
             message: {type: string, example: No free places in company}
-            details:
-              type: object
-              additionalProperties: true
-              description: VALIDATION_ERROR uses details.fields as a map of field names to arrays of messages
+            details: {$ref: '#/components/schemas/ErrorDetails'}
+    ErrorDetails:
+      type: object
+      properties:
+        fields:
+          type: object
+          additionalProperties:
+            type: array
+            items: {type: string}
+          description: Present for VALIDATION_ERROR; keys are request field or parameter names
+      additionalProperties: true
+    ErrorCode:
+      type: string
+      description: Stable machine-readable code. Frontend logic must never branch on error.message.
+      enum:
+        - VALIDATION_ERROR
+        - UNAUTHORIZED
+        - FORBIDDEN
+        - NOT_FOUND
+        - INTERNAL_ERROR
+        - OAUTH_PROVIDER_UNAVAILABLE
+        - USER_BANNED
+        - USER_NOT_FOUND
+        - PROFILE_INCOMPLETE
+        - EVENT_NOT_FOUND
+        - EVENT_NOT_AVAILABLE
+        - INVALID_STATUS_TRANSITION
+        - COMPANY_NOT_FOUND
+        - COMPANY_FULL
+        - COMPANY_CLOSED
+        - COMPANY_BLOCKED
+        - COMPANY_CAPACITY_BELOW_MEMBERS
+        - NOT_COMPANY_OWNER
+        - NOT_COMPANY_MEMBER
+        - OWNER_CANNOT_LEAVE
+        - OWNER_CANNOT_BE_REMOVED
+        - ALREADY_COMPANY_MEMBER
+        - ALREADY_IN_EVENT_COMPANY
+        - APPLICATION_ALREADY_EXISTS
+        - APPLICATION_NOT_FOUND
+        - APPLICATION_ALREADY_RESOLVED
+        - ALREADY_EVENT_PARTICIPANT
+        - NOT_SOLO_PARTICIPANT
+        - REPORT_TARGET_NOT_FOUND
+        - REPORT_NOT_FOUND
+        - REPORT_ALREADY_RESOLVED
+        - AVATAR_TOO_LARGE
+        - UNSUPPORTED_AVATAR_TYPE
+        - AVATAR_UPLOAD_FAILED
 

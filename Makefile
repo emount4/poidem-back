@@ -1,7 +1,12 @@
 .DEFAULT_GOAL := help
 COMPOSE := docker compose
+REDOCLY := npx --yes @redocly/cli@2.54.2
 
-.PHONY: help init run build test vet fmt up down logs ps db-up db-shell migrate-up migrate-down migrate-version
+ifeq ($(OS),Windows_NT)
+REDOCLY := npx.cmd --yes @redocly/cli@2.54.2
+endif
+
+.PHONY: help init run build test vet fmt openapi-lint check up down logs ps db-up db-shell migrate-up migrate-down migrate-version
 
 help:
 	@echo "init      - create .env from .env.example if missing"
@@ -11,6 +16,7 @@ help:
 	@echo "db-shell  - open psql inside PostgreSQL"
 	@echo "run/build - run locally or build to bin/"
 	@echo "test/vet/fmt - check or format Go code"
+	@echo "openapi-lint/check - validate OpenAPI or run all checks"
 	@echo "migrate-up/version - apply migrations or show version"
 	@echo "migrate-down - roll back one migration (deletes its data)"
 
@@ -35,6 +41,11 @@ vet:
 
 fmt:
 	gofmt -w cmd internal
+
+openapi-lint:
+	$(REDOCLY) lint api/openapi.yaml
+
+check: test vet openapi-lint
 
 up: init
 	$(COMPOSE) up -d --build --wait

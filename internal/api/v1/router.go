@@ -14,6 +14,8 @@ type Dependencies struct {
 	Sessions       accounthttp.Sessions
 	SessionCookies accounthttp.CookieConfig
 	OAuth          accounthttp.OAuthRoutesConfig
+	Authenticator  accounthttp.Authenticator
+	Profiles       accounthttp.Profiles
 }
 
 // RegisterRoutes mounts v1 routes on the supplied group.
@@ -25,4 +27,5 @@ func RegisterRoutes(routes *gin.RouterGroup, dependencies Dependencies) {
 	cataloghttp.RegisterRoutes(routes, dependencies.Catalog)
 	accounthttp.RegisterSessionRoutes(routes, dependencies.Sessions, dependencies.SessionCookies)
 	accounthttp.RegisterOAuthRoutes(routes, dependencies.OAuth)
+	accounthttp.RegisterProfileRoutes(routes, dependencies.Profiles, dependencies.Authenticator)
 }
