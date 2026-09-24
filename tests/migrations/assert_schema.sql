@@ -32,6 +32,14 @@ BEGIN
     )) <> 12 THEN
         RAISE EXCEPTION 'Missing recommended indexes';
     END IF;
+    IF (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
+        'idx_events_public_catalog', 'idx_events_creator_start'
+    )) <> 2 THEN
+        RAISE EXCEPTION 'Missing event query indexes';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_events_time_range') THEN
+        RAISE EXCEPTION 'Missing event time range constraint';
+    END IF;
 END;
 $$;
 

@@ -40,6 +40,44 @@ func RequireAuthentication(authenticator Authenticator) gin.HandlerFunc {
 	}
 }
 
+// OptionalAuthentication attaches a principal when a valid token is present.
+// Missing, expired and banned-user tokens are treated as an anonymous public request.
+func OptionalAuthentication(authenticator Authenticator) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token, ok := bearerToken(c.GetHeader("Authorization"))
+		if !ok {
+			c.Next()
+			return
+		}
+		principal, err := authenticator.Authenticate(c.Request.Context(), token)
+		if errors.Is(err, account.ErrUnauthorized) || errors.Is(err, account.ErrUserBanned) {
+			c.Next()
+			return
+		}
+		if err != nil {
+			apierr.WriteInternal(c, err)
+			return
+		}
+		c.Request = c.Request.WithContext(account.WithPrincipal(c.Request.Context(), principal))
+		c.Next()
+	}
+}
+
+func RequireAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		principal, ok := account.PrincipalFromContext(c.Request.Context())
+		if !ok {
+			apierr.Write(c, http.StatusUnauthorized, "UNAUTHORIZED", "Требуется авторизация", nil)
+			return
+		}
+		if principal.Role != account.RoleAdmin {
+			apierr.Write(c, http.StatusForbidden, "FORBIDDEN", "Недостаточно прав", nil)
+			return
+		}
+		c.Next()
+	}
+}
+
 func RequireCompleteProfile() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		principal, ok := account.PrincipalFromContext(c.Request.Context())

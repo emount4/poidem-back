@@ -1236,6 +1236,7 @@ components:
       enum: [pending, active, rejected, blocked, completed]
     EventInput:
       type: object
+      additionalProperties: false
       required: [title, categoryId, cityId, startsAt, locationName]
       properties:
         title: {type: string, minLength: 1, maxLength: 200}

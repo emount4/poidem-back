@@ -141,19 +141,19 @@ credentials задаются окружением и не входят в API-к
 
 Зависимость: этапы 1–2; чтение можно готовить на фикстурах после этапа 1.
 
-- [ ] POST events создаёт pending; валидация справочников, обязательных полей и дат.
-- [ ] Каталог active/незавершённых, включая ongoing; search/city/category/dateFrom/dateTo,
+- [x] POST events создаёт pending; валидация справочников, обязательных полей и дат.
+- [x] Каталог active/незавершённых, включая ongoing; search/city/category/dateFrom/dateTo,
       ISO 8601 date-time с offset, пагинация, default startsAt ASC,id ASC;
       popular participantsCount DESC,id ASC.
-- [ ] Детали и участники; автору разрешены свои pending/rejected, публично скрыты
+- [x] Детали и участники; автору разрешены свои pending/rejected, публично скрыты
       недоступные состояния. Применять те же правила к вложенным ресурсам.
-- [ ] Admin list/details/PATCH и разрешённые approve/reject/block.
-- [ ] Идемпотентная фоновая обработка active → completed при endsAt <= now или,
+- [x] Admin list/details/PATCH и разрешённые approve/reject/block.
+- [x] Идемпотентная фоновая обработка active → completed при endsAt <= now или,
       если endsAt отсутствует, startsAt <= now; ongoing остаётся доступным для участия;
       при проверке доступности учитывать время независимо от задержки фоновой задачи.
 - [ ] participantsCount читать из event_participants; companiesCount учитывать
       согласованную видимость и soft delete. Исключить N+1 и размножение счётчиков JOIN-ами.
-- [ ] GET users/me/events: объединение создания/участия без дублей, upcoming/past,
+- [x] GET users/me/events: объединение создания/участия без дублей, upcoming/past,
       ongoing в upcoming, пагинация и обязательное relation.
 
 Готовность: создание → модерация → каталог; скрытые состояния не открываются
@@ -272,6 +272,8 @@ ban/block/delete имеют разные, протестированные по�
 
 ## Ближайшие задачи
 
-1. Добавить admin ban/unban с отзывом всех refresh-сессий и служебное создание первого admin.
-2. Добавить CSRF-защиту для настраиваемого cross-site cookie-режима.
-3. После этапа авторизации перейти к созданию и модерации событий; Telegram и VK подключать через реестр провайдеров.
+1. Проверить миграцию событий и PostgreSQL-запросы на отдельной интеграционной БД.
+2. Перейти к схеме и бизнес-операциям компаний/участия; вместе с soft delete
+   окончательно зафиксировать видимость и подсчёт companiesCount.
+3. Интеграцию полного справочника городов, bootstrap первого admin и cross-site CSRF
+   оставить отдельными техническими решениями; до их принятия не включать SameSite=None.

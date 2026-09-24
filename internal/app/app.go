@@ -20,6 +20,8 @@ import (
 	"github.com/emount4/poidem-back/internal/api/v1"
 	"github.com/emount4/poidem-back/internal/catalog"
 	catalogpostgres "github.com/emount4/poidem-back/internal/catalog/postgres"
+	"github.com/emount4/poidem-back/internal/events"
+	eventspostgres "github.com/emount4/poidem-back/internal/events/postgres"
 	"github.com/emount4/poidem-back/internal/platform/config"
 	"github.com/emount4/poidem-back/internal/platform/postgres"
 	"github.com/gin-gonic/gin"
@@ -56,6 +58,9 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure profiles: %w", err)
 	}
+	eventRepository := eventspostgres.NewRepository(pool)
+	eventService := events.NewService(eventRepository)
+	eventCompletion := events.NewCompletionWorker(eventRepository, log, time.Minute, 100)
 	oauthFlow, err := accountoauth.NewFlow(cfg.OAuth.StateSecret, cfg.OAuth.FlowTTL)
 	if err != nil {
 		return fmt.Errorf("configure OAuth flow: %w", err)
@@ -88,6 +93,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 			V1: v1.Dependencies{
 				Catalog: catalogService, Sessions: refreshService, SessionCookies: refreshCookies,
 				Authenticator: authService, Profiles: profileService,
+				Events: eventService,
 				OAuth: accounthttp.OAuthRoutesConfig{
 					Providers: oauthProviders, Login: loginService, Flow: oauthFlow,
 					RefreshCookies: refreshCookies, FrontendURL: cfg.OAuth.FrontendURL,
@@ -104,6 +110,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
+	go eventCompletion.Run(ctx)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
 	log.Info("http server started", "address", server.Addr)
