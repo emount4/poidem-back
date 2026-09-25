@@ -37,8 +37,19 @@ BEGIN
     )) <> 2 THEN
         RAISE EXCEPTION 'Missing event query indexes';
     END IF;
+    IF (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
+        'idx_companies_event_visible', 'idx_company_members_user_joined'
+    )) <> 2 THEN
+        RAISE EXCEPTION 'Missing company query indexes';
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_events_time_range') THEN
         RAISE EXCEPTION 'Missing event time range constraint';
+    END IF;
+    IF (SELECT count(*) FROM pg_constraint WHERE conname IN (
+        'chk_companies_max_members', 'chk_company_members_role',
+        'chk_event_participants_company', 'fk_event_participants_company_event'
+    )) <> 4 THEN
+        RAISE EXCEPTION 'Missing company participation constraints';
     END IF;
 END;
 $$;
@@ -94,8 +105,11 @@ SELECT pg_temp.expect_sqlstate('DELETE FROM users WHERE id = 1', '23503');
 SELECT pg_temp.expect_sqlstate('UPDATE events SET status = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE companies SET status = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE companies SET join_type = ''invalid''', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE companies SET max_members = 1', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE company_members SET role = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE applications SET status = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE event_participants SET participation_type = ''invalid''', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE event_participants SET company_id = 1 WHERE user_id = 2', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE reports SET status = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE reports SET target_type = ''invalid''', '23514');
 

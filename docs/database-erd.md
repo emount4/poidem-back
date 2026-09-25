@@ -3,8 +3,10 @@
 Диаграмма ниже точно отражает схему после миграций
 [`000001_initial_schema.up.sql`](../migrations/000001_initial_schema.up.sql) и
 [`000002_refresh_sessions.up.sql`](../migrations/000002_refresh_sessions.up.sql),
-а ограничения событий дополнены миграцией
-[`000003_events_hardening.up.sql`](../migrations/000003_events_hardening.up.sql).
+ограничения событий дополнены миграцией
+[`000003_events_hardening.up.sql`](../migrations/000003_events_hardening.up.sql),
+а ограничения компаний и участия — миграцией
+[`000004_companies_hardening.up.sql`](../migrations/000004_companies_hardening.up.sql).
 Это 13 таблиц текущей базы.
 
 ```mermaid
@@ -80,6 +82,7 @@ erDiagram
         varchar status
         timestamptz created_at
         timestamptz updated_at
+        timestamptz deleted_at
     }
 
     COMPANIES {
@@ -186,14 +189,19 @@ erDiagram
 задаёт значения по умолчанию для статуса и timestamps, запрещает `ends_at <= starts_at`
 и добавляет индексы публичного каталога и списка событий создателя.
 
+Миграция `000004` добавляет `companies.deleted_at`, ограничивает `max_members`
+значениями 2–100, фиксирует роли `owner/member`, делает ключевые поля компаний и
+участия обязательными и запрещает участие типа `solo` с компанией либо типа
+`company` без компании. Составной внешний ключ `(company_id, event_id)` не даёт
+привязать участие к компании другого события.
+
 Mermaid не показывает все признаки `NOT NULL` и значения по умолчанию. Для них
 источником истины остаётся SQL-миграция, ссылка на которую приведена в начале.
 
 ## Дополнения целевой схемы MVP
 
-Последующие миграции должны добавить `companies.deleted_at`, а также:
+Последующие миграции должны добавить:
 
-- `CHECK (max_members BETWEEN 2 AND 100)`;
 - ограничения для `users.role` и `users.status`;
 - частичный UNIQUE для одной pending-заявки на `(company_id, user_id)`;
 - обязательность и значения по умолчанию для полей, которые заполняет приложение;

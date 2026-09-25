@@ -6,6 +6,7 @@ import (
 
 	accounthttp "github.com/emount4/poidem-back/internal/account/httpv1"
 	cataloghttp "github.com/emount4/poidem-back/internal/catalog/httpv1"
+	companieshttp "github.com/emount4/poidem-back/internal/companies/httpv1"
 	eventshttp "github.com/emount4/poidem-back/internal/events/httpv1"
 	"github.com/gin-gonic/gin"
 )
@@ -18,6 +19,7 @@ type Dependencies struct {
 	Authenticator  accounthttp.Authenticator
 	Profiles       accounthttp.Profiles
 	Events         eventshttp.Events
+	Companies      companieshttp.Companies
 }
 
 // RegisterRoutes mounts v1 routes on the supplied group.
@@ -31,4 +33,5 @@ func RegisterRoutes(routes *gin.RouterGroup, dependencies Dependencies) {
 	accounthttp.RegisterOAuthRoutes(routes, dependencies.OAuth)
 	accounthttp.RegisterProfileRoutes(routes, dependencies.Profiles, dependencies.Authenticator)
 	eventshttp.RegisterRoutes(routes, dependencies.Events, dependencies.Authenticator)
+	companieshttp.RegisterRoutes(routes, dependencies.Companies, dependencies.Authenticator)
 }

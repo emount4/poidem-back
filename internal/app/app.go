@@ -20,6 +20,8 @@ import (
 	"github.com/emount4/poidem-back/internal/api/v1"
 	"github.com/emount4/poidem-back/internal/catalog"
 	catalogpostgres "github.com/emount4/poidem-back/internal/catalog/postgres"
+	"github.com/emount4/poidem-back/internal/companies"
+	companiespostgres "github.com/emount4/poidem-back/internal/companies/postgres"
 	"github.com/emount4/poidem-back/internal/events"
 	eventspostgres "github.com/emount4/poidem-back/internal/events/postgres"
 	"github.com/emount4/poidem-back/internal/platform/config"
@@ -60,6 +62,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	}
 	eventRepository := eventspostgres.NewRepository(pool)
 	eventService := events.NewService(eventRepository)
+	companyService := companies.NewService(companiespostgres.NewRepository(pool))
 	eventCompletion := events.NewCompletionWorker(eventRepository, log, time.Minute, 100)
 	oauthFlow, err := accountoauth.NewFlow(cfg.OAuth.StateSecret, cfg.OAuth.FlowTTL)
 	if err != nil {
@@ -93,7 +96,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 			V1: v1.Dependencies{
 				Catalog: catalogService, Sessions: refreshService, SessionCookies: refreshCookies,
 				Authenticator: authService, Profiles: profileService,
-				Events: eventService,
+				Events: eventService, Companies: companyService,
 				OAuth: accounthttp.OAuthRoutesConfig{
 					Providers: oauthProviders, Login: loginService, Flow: oauthFlow,
 					RefreshCookies: refreshCookies, FrontendURL: cfg.OAuth.FrontendURL,

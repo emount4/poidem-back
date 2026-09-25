@@ -19,7 +19,7 @@ const eventColumns = `
 	e.id, e.title, e.description, e.category_id, e.city_id,
 	e.starts_at, e.ends_at, e.location_name, e.address, e.image_url, e.status,
 	(SELECT count(*) FROM event_participants ep WHERE ep.event_id = e.id),
-	(SELECT count(*) FROM companies c WHERE c.event_id = e.id AND COALESCE(c.status, 'active') <> 'blocked'),
+	(SELECT count(*) FROM companies c WHERE c.event_id = e.id AND c.deleted_at IS NULL AND c.status <> 'blocked'),
 	u.id, u.first_name, u.last_name, u.avatar_url, e.created_at, e.updated_at`
 
 const eventFrom = ` FROM events e JOIN users u ON u.id = e.creator_id `
