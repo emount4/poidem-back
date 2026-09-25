@@ -36,6 +36,7 @@ erDiagram
         varchar first_name
         varchar last_name
         text avatar_url
+        text avatar_object_key
         bigint city_id FK
         text about
         varchar role
@@ -81,10 +82,13 @@ erDiagram
         timestamptz ends_at
         varchar location_name
         varchar address
+        double latitude
+        double longitude
+        varchar location_source
         varchar status
+        text moderation_reason
         timestamptz created_at
         timestamptz updated_at
-        timestamptz deleted_at
     }
 
     COMPANIES {

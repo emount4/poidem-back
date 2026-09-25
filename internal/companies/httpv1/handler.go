@@ -27,6 +27,8 @@ type Companies interface {
 	GetVisible(context.Context, int64, companies.Viewer) (companies.Company, error)
 	ListMembers(context.Context, int64, companies.Viewer, companies.Page) ([]companies.UserShort, int64, error)
 	ListMine(context.Context, int64, companies.Page) ([]companies.Company, int64, error)
+	ListAdmin(context.Context, companies.Page) ([]companies.Company, int64, error)
+	Block(context.Context, int64) (companies.Company, error)
 	Update(context.Context, int64, int64, companies.Patch) (companies.Company, error)
 	SetRecruitment(context.Context, int64, int64, bool) (companies.Company, error)
 	Delete(context.Context, int64, int64) error
@@ -34,6 +36,11 @@ type Companies interface {
 	Leave(context.Context, int64, int64) error
 	RemoveMember(context.Context, int64, int64, int64) error
 	CreateApplication(context.Context, int64, int64, companies.CreateApplicationInput) (companies.Application, error)
+	GetMyApplication(context.Context, int64, int64) (companies.Application, error)
+	ListApplications(context.Context, int64, int64, string, companies.Page) ([]companies.Application, int64, error)
+	ListMyApplications(context.Context, int64, companies.Page) ([]companies.Application, int64, error)
+	CancelApplication(context.Context, int64, int64) error
+	ResolveApplication(context.Context, int64, int64, int64, string) (companies.Application, error)
 }
 
 func RegisterRoutes(routes *gin.RouterGroup, service Companies, authenticator accounthttp.Authenticator) {
@@ -47,6 +54,7 @@ func RegisterRoutes(routes *gin.RouterGroup, service Companies, authenticator ac
 	protected := routes.Group("")
 	protected.Use(accounthttp.RequireAuthentication(authenticator))
 	protected.GET("/users/me/companies", h.listMine)
+	protected.GET("/users/me/applications", h.listMyApplications)
 	protected.POST("/events/:eventId/companies", accounthttp.RequireCompleteProfile(), h.create)
 	protected.PATCH("/companies/:companyId", h.update)
 	protected.DELETE("/companies/:companyId", h.delete)
@@ -56,6 +64,15 @@ func RegisterRoutes(routes *gin.RouterGroup, service Companies, authenticator ac
 	protected.DELETE("/companies/:companyId/members/me", h.leave)
 	protected.DELETE("/companies/:companyId/members/:userId", h.removeMember)
 	protected.POST("/companies/:companyId/applications", accounthttp.RequireCompleteProfile(), h.createApplication)
+	protected.GET("/companies/:companyId/applications/me", h.getMyApplication)
+	protected.DELETE("/companies/:companyId/applications/me", h.cancelMyApplication)
+	protected.GET("/companies/:companyId/applications", h.listApplications)
+	protected.POST("/companies/:companyId/applications/:applicationId/:action", h.resolveApplication)
+
+	admin := routes.Group("/admin")
+	admin.Use(accounthttp.RequireAuthentication(authenticator), accounthttp.RequireAdmin())
+	admin.GET("/companies", h.listAdmin)
+	admin.POST("/companies/:companyId/block", h.block)
 }
 
 type handler struct{ companies Companies }
@@ -143,6 +160,31 @@ func (h handler) listMine(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, pagination.NewResponse(mapCompanies(items), page, total))
+}
+
+func (h handler) listAdmin(c *gin.Context) {
+	page, fields := pagination.Parse(c.Request.URL.Query())
+	if len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	items, total, err := h.companies.ListAdmin(c.Request.Context(), companies.Page{Offset: page.Offset(), Limit: page.Limit})
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, pagination.NewResponse(mapCompanies(items), page, total))
+}
+
+func (h handler) block(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	item, err := h.companies.Block(c.Request.Context(), companyID)
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, newCompanyResponse(item))
 }
 
 func (h handler) update(c *gin.Context) {
@@ -255,6 +297,92 @@ func (h handler) createApplication(c *gin.Context) {
 	c.JSON(http.StatusCreated, newApplicationResponse(item))
 }
 
+func (h handler) getMyApplication(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	item, err := h.companies.GetMyApplication(c.Request.Context(), companyID, principal.UserID)
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, newApplicationResponse(item))
+}
+
+func (h handler) cancelMyApplication(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.companies.CancelApplication(c.Request.Context(), companyID, principal.UserID)) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h handler) listApplications(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	page, fields := pagination.Parse(c.Request.URL.Query())
+	status, statusFields := applicationStatusQuery(c)
+	if fields == nil {
+		fields = apierr.FieldErrors{}
+	}
+	for key, value := range statusFields {
+		fields[key] = value
+	}
+	if len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	items, total, err := h.companies.ListApplications(c.Request.Context(), companyID, principal.UserID, status, companies.Page{Offset: page.Offset(), Limit: page.Limit})
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, pagination.NewResponse(mapApplications(items), page, total))
+}
+
+func (h handler) listMyApplications(c *gin.Context) {
+	page, fields := pagination.Parse(c.Request.URL.Query())
+	if len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	items, total, err := h.companies.ListMyApplications(c.Request.Context(), principal.UserID, companies.Page{Offset: page.Offset(), Limit: page.Limit})
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, pagination.NewResponse(mapApplications(items), page, total))
+}
+
+func (h handler) resolveApplication(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	applicationID, ok := positivePathID(c, "applicationId", "APPLICATION_NOT_FOUND", "Заявка не найдена")
+	if !ok {
+		return
+	}
+	action := c.Param("action")
+	if action != "approve" && action != "reject" {
+		apierr.Write(c, http.StatusNotFound, "APPLICATION_NOT_FOUND", "Заявка не найдена", nil)
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	item, err := h.companies.ResolveApplication(c.Request.Context(), companyID, applicationID, principal.UserID, action)
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, newApplicationResponse(item))
+}
+
 func (h handler) writeError(c *gin.Context, err error) bool {
 	if err == nil {
 		return false
@@ -289,10 +417,16 @@ func (h handler) writeError(c *gin.Context, err error) bool {
 		apierr.Write(c, http.StatusConflict, "NOT_COMPANY_MEMBER", "Пользователь не состоит в компании", nil)
 	case errors.Is(err, companies.ErrUserNotFound):
 		apierr.Write(c, http.StatusNotFound, "USER_NOT_FOUND", "Пользователь не найден", nil)
+	case errors.Is(err, companies.ErrUserBanned):
+		apierr.Write(c, http.StatusConflict, "APPLICANT_BANNED", "Заблокированного пользователя нельзя принять в компанию", nil)
 	case errors.Is(err, companies.ErrOwnerCannotBeRemoved):
 		apierr.Write(c, http.StatusConflict, "OWNER_CANNOT_BE_REMOVED", "Владелец не может быть исключён из компании", nil)
 	case errors.Is(err, companies.ErrApplicationAlreadyExists):
 		apierr.Write(c, http.StatusConflict, "APPLICATION_ALREADY_EXISTS", "Активная заявка уже существует", nil)
+	case errors.Is(err, companies.ErrApplicationNotFound):
+		apierr.Write(c, http.StatusNotFound, "APPLICATION_NOT_FOUND", "Заявка не найдена", nil)
+	case errors.Is(err, companies.ErrApplicationAlreadyResolved):
+		apierr.Write(c, http.StatusConflict, "APPLICATION_ALREADY_RESOLVED", "Заявка уже обработана", nil)
 	default:
 		apierr.WriteInternal(c, err)
 	}
@@ -416,6 +550,14 @@ func newApplicationResponse(item companies.Application) applicationResponse {
 	}
 }
 
+func mapApplications(items []companies.Application) []applicationResponse {
+	result := make([]applicationResponse, 0, len(items))
+	for _, item := range items {
+		result = append(result, newApplicationResponse(item))
+	}
+	return result
+}
+
 func decodeJSON(c *gin.Context, target any) apierr.FieldErrors {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCompanyBodyBytes)
 	decoder := json.NewDecoder(c.Request.Body)
@@ -452,6 +594,25 @@ func positivePathID(c *gin.Context, name, code, message string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+func applicationStatusQuery(c *gin.Context) (string, apierr.FieldErrors) {
+	raw, ok := c.Request.URL.Query()["status"]
+	if !ok {
+		return "", apierr.FieldErrors{}
+	}
+	if len(raw) != 1 {
+		return "", apierr.FieldErrors{"status": {"Параметр должен быть указан один раз"}}
+	}
+	for _, allowed := range []string{
+		companies.ApplicationStatusPending, companies.ApplicationStatusApproved,
+		companies.ApplicationStatusRejected, companies.ApplicationStatusCancelled,
+	} {
+		if raw[0] == allowed {
+			return raw[0], apierr.FieldErrors{}
+		}
+	}
+	return "", apierr.FieldErrors{"status": {"Недопустимое значение"}}
 }
 
 func viewer(c *gin.Context) companies.Viewer {

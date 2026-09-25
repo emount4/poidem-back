@@ -84,8 +84,42 @@ func setTestEnvironment(t *testing.T) {
 		"FRONTEND_URL": "", "API_URL": "", "OAUTH_CALLBACK_URL": "",
 		"OAUTH_STATE_SECRET": "", "OAUTH_FLOW_TTL": "",
 		"GOOGLE_CLIENT_ID": "", "GOOGLE_CLIENT_SECRET": "",
+		"S3_ENDPOINT": "", "S3_PUBLIC_URL": "", "S3_ACCESS_KEY": "", "S3_SECRET_KEY": "",
+		"S3_BUCKET": "", "S3_REGION": "", "S3_USE_SSL": "",
 	} {
 		t.Setenv(key, value)
+	}
+}
+
+func TestLoadStorageSettings(t *testing.T) {
+	setTestEnvironment(t)
+	t.Setenv("S3_ENDPOINT", "minio:9000")
+	t.Setenv("S3_PUBLIC_URL", "https://media.example.com/")
+	t.Setenv("S3_ACCESS_KEY", "access")
+	t.Setenv("S3_SECRET_KEY", "secret-value")
+	t.Setenv("S3_BUCKET", "avatars")
+	t.Setenv("S3_REGION", "ru-central1")
+	t.Setenv("S3_USE_SSL", "true")
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Storage.Endpoint != "minio:9000" || cfg.Storage.PublicURL != "https://media.example.com" || !cfg.Storage.UseSSL {
+		t.Fatalf("unexpected storage config: %+v", cfg.Storage)
+	}
+
+	for _, tc := range []struct{ key, value string }{
+		{"S3_ENDPOINT", "http://minio:9000"},
+		{"S3_PUBLIC_URL", "minio:9000"},
+		{"S3_USE_SSL", "sometimes"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			setTestEnvironment(t)
+			t.Setenv(tc.key, tc.value)
+			if _, err := Load(""); err == nil {
+				t.Fatal("expected invalid storage configuration to fail")
+			}
+		})
 	}
 }
 

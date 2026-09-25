@@ -24,8 +24,11 @@ import (
 	companiespostgres "github.com/emount4/poidem-back/internal/companies/postgres"
 	"github.com/emount4/poidem-back/internal/events"
 	eventspostgres "github.com/emount4/poidem-back/internal/events/postgres"
+	"github.com/emount4/poidem-back/internal/platform/avatarstorage"
 	"github.com/emount4/poidem-back/internal/platform/config"
 	"github.com/emount4/poidem-back/internal/platform/postgres"
+	"github.com/emount4/poidem-back/internal/reports"
+	reportspostgres "github.com/emount4/poidem-back/internal/reports/postgres"
 	"github.com/gin-gonic/gin"
 )
 
@@ -42,6 +45,12 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	log.Info("postgres connected")
 	catalogService := catalog.NewService(catalogpostgres.NewRepository(pool))
 	accountRepository := accountpostgres.NewRepository(pool)
+	if cfg.BootstrapAdminUserID > 0 {
+		if err := accountRepository.PromoteAdmin(ctx, cfg.BootstrapAdminUserID); err != nil {
+			return fmt.Errorf("bootstrap admin user %d: %w", cfg.BootstrapAdminUserID, err)
+		}
+		log.Info("bootstrap admin role ensured", "user_id", cfg.BootstrapAdminUserID)
+	}
 	transactions := postgres.NewTxManager(pool)
 	accessTokens, err := accountjwt.NewAccessTokens(cfg.Auth.JWTSecret, cfg.Auth.JWTIssuer, cfg.Auth.JWTAudience, cfg.Auth.AccessTTL)
 	if err != nil {
@@ -60,10 +69,25 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure profiles: %w", err)
 	}
+	adminService := account.NewAdminService(accountRepository)
+	avatarStorage, err := avatarstorage.NewMinIO(ctx, cfg.Storage)
+	if err != nil {
+		return fmt.Errorf("configure avatar storage: %w", err)
+	}
+	avatarService, err := account.NewAvatarService(accountRepository, avatarStorage)
+	if err != nil {
+		return fmt.Errorf("configure avatars: %w", err)
+	}
 	eventRepository := eventspostgres.NewRepository(pool)
 	eventService := events.NewService(eventRepository)
+	coverService, err := events.NewCoverService(eventRepository, avatarStorage)
+	if err != nil {
+		return fmt.Errorf("configure event covers: %w", err)
+	}
 	companyService := companies.NewService(companiespostgres.NewRepository(pool))
+	reportService := reports.NewService(reportspostgres.NewRepository(pool))
 	eventCompletion := events.NewCompletionWorker(eventRepository, log, time.Minute, 100)
+	coverCleanup := events.NewCoverCleanupWorker(eventRepository, avatarStorage, log)
 	oauthFlow, err := accountoauth.NewFlow(cfg.OAuth.StateSecret, cfg.OAuth.FlowTTL)
 	if err != nil {
 		return fmt.Errorf("configure OAuth flow: %w", err)
@@ -95,8 +119,8 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 			CORSOrigin:   cfg.OAuth.FrontendOrigin,
 			V1: v1.Dependencies{
 				Catalog: catalogService, Sessions: refreshService, SessionCookies: refreshCookies,
-				Authenticator: authService, Profiles: profileService,
-				Events: eventService, Companies: companyService,
+				Authenticator: authService, Profiles: profileService, Avatars: avatarService, Admin: adminService,
+				Events: eventService, Covers: coverService, Companies: companyService, Reports: reportService,
 				OAuth: accounthttp.OAuthRoutesConfig{
 					Providers: oauthProviders, Login: loginService, Flow: oauthFlow,
 					RefreshCookies: refreshCookies, FrontendURL: cfg.OAuth.FrontendURL,
@@ -114,6 +138,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	go eventCompletion.Run(ctx)
+	go coverCleanup.Run(ctx)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.Serve(listener) }()
 	log.Info("http server started", "address", server.Addr)

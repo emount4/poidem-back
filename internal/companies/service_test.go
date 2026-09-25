@@ -36,6 +36,12 @@ func (*storeStub) ListMembers(context.Context, int64, Viewer, Page) ([]UserShort
 func (*storeStub) ListMine(context.Context, int64, Page) ([]Company, int64, error) {
 	return nil, 0, nil
 }
+func (*storeStub) ListAdmin(context.Context, Page) ([]Company, int64, error) {
+	return nil, 0, nil
+}
+func (*storeStub) Block(context.Context, int64, time.Time) (Company, error) {
+	return Company{Status: StatusBlocked}, nil
+}
 func (s *storeStub) Update(_ context.Context, _, _ int64, patch Patch, _ time.Time) (Company, error) {
 	return Company{ID: 10, Name: patch.Name.Value}, nil
 }
@@ -58,6 +64,19 @@ func (s *storeStub) RemoveMember(_ context.Context, companyID, ownerID, userID i
 func (s *storeStub) CreateApplication(_ context.Context, _, _ int64, input CreateApplicationInput, _ time.Time) (Application, error) {
 	s.applicationInput = input
 	return Application{ID: 20, Message: input.Message}, nil
+}
+func (*storeStub) GetMyApplication(context.Context, int64, int64) (Application, error) {
+	return Application{ID: 20}, nil
+}
+func (*storeStub) ListApplications(context.Context, int64, int64, string, Page) ([]Application, int64, error) {
+	return nil, 0, nil
+}
+func (*storeStub) ListMyApplications(context.Context, int64, Page) ([]Application, int64, error) {
+	return nil, 0, nil
+}
+func (*storeStub) CancelApplication(context.Context, int64, int64, time.Time) error { return nil }
+func (*storeStub) ResolveApplication(context.Context, int64, int64, int64, string, time.Time) (Application, error) {
+	return Application{ID: 20}, nil
 }
 
 func TestCreateNormalizesAndDelegates(t *testing.T) {

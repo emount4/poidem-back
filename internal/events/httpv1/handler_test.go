@@ -18,13 +18,16 @@ type eventsStub struct {
 	participationErr error
 	joinedEventID    int64
 	joinedUserID     int64
+	listFilter       events.PublicFilter
+	moderationReason *string
 }
 
 func (s *eventsStub) Create(_ context.Context, userID int64, input events.CreateInput) (events.Event, error) {
 	s.created = input
 	return sampleEvent(userID), nil
 }
-func (*eventsStub) ListPublic(context.Context, events.PublicFilter, events.Page) ([]events.Event, int64, error) {
+func (s *eventsStub) ListPublic(_ context.Context, filter events.PublicFilter, _ events.Page) ([]events.Event, int64, error) {
+	s.listFilter = filter
 	return []events.Event{}, 0, nil
 }
 func (*eventsStub) GetVisible(context.Context, int64, *int64) (events.Event, error) {
@@ -43,7 +46,13 @@ func (*eventsStub) GetAdmin(context.Context, int64) (events.Event, error) { retu
 func (*eventsStub) Update(context.Context, int64, events.Patch) (events.Event, error) {
 	return sampleEvent(1), nil
 }
-func (*eventsStub) Transition(context.Context, int64, string) (events.Event, error) {
+func (*eventsStub) UpdateOwned(context.Context, int64, int64, events.Patch) (events.Event, error) {
+	return sampleEvent(1), nil
+}
+func (*eventsStub) DeleteOwned(context.Context, int64, int64) error { return nil }
+func (*eventsStub) DeleteAdmin(context.Context, int64) error        { return nil }
+func (s *eventsStub) Transition(_ context.Context, _ int64, _ string, reason *string) (events.Event, error) {
+	s.moderationReason = reason
 	return sampleEvent(1), nil
 }
 func (s *eventsStub) JoinSolo(_ context.Context, eventID, userID int64) error {
@@ -118,6 +127,43 @@ func TestEventFiltersAndAdminAuthorization(t *testing.T) {
 	}
 }
 
+func TestMapBoundsAndTimeAliases(t *testing.T) {
+	service := &eventsStub{}
+	router := eventRouter(service)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+		"/events?west=30.10&south=59.80&east=30.55&north=60.10&from=2030-01-01T00:00:00%2B03:00&status=active", nil))
+	if response.Code != http.StatusOK || service.listFilter.Bounds == nil || service.listFilter.Bounds.West != 30.10 || service.listFilter.DateFrom == nil {
+		t.Fatalf("status=%d body=%s filter=%+v", response.Code, response.Body.String(), service.listFilter)
+	}
+
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/events?west=30&south=59", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("incomplete bounds status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet,
+		"/events?from=2030-01-01T00:00:00Z&dateFrom=2030-01-01T00:00:00Z", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate time alias status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestModerationReason(t *testing.T) {
+	service := &eventsStub{}
+	router := eventRouter(service)
+	request := httptest.NewRequest(http.MethodPost, "/admin/events/1/reject", strings.NewReader(`{"reason":"Нет координат"}`))
+	request.Header.Set("Authorization", "Bearer admin")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || service.moderationReason == nil || *service.moderationReason != "Нет координат" {
+		t.Fatalf("status=%d body=%s reason=%v", response.Code, response.Body.String(), service.moderationReason)
+	}
+}
+
 func TestSoloParticipationRoutes(t *testing.T) {
 	service := &eventsStub{}
 	router := eventRouter(service)
@@ -171,6 +217,7 @@ func sampleEvent(creatorID int64) events.Event {
 		ID: 1, Title: "Прогулка", CategoryID: 1, CityID: 2,
 		StartsAt:     time.Date(2030, 1, 2, 12, 0, 0, 0, time.FixedZone("MSK", 3*60*60)),
 		LocationName: "Парк", Status: events.StatusPending,
+		Location:  &events.Location{Latitude: 55.75, Longitude: 37.62, Source: "manual"},
 		Creator:   events.UserShort{ID: creatorID, FirstName: "Иван"},
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}

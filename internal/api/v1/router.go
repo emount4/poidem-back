@@ -8,6 +8,7 @@ import (
 	cataloghttp "github.com/emount4/poidem-back/internal/catalog/httpv1"
 	companieshttp "github.com/emount4/poidem-back/internal/companies/httpv1"
 	eventshttp "github.com/emount4/poidem-back/internal/events/httpv1"
+	reportshttp "github.com/emount4/poidem-back/internal/reports/httpv1"
 	"github.com/gin-gonic/gin"
 )
 
@@ -18,8 +19,12 @@ type Dependencies struct {
 	OAuth          accounthttp.OAuthRoutesConfig
 	Authenticator  accounthttp.Authenticator
 	Profiles       accounthttp.Profiles
+	Avatars        accounthttp.Avatars
+	Admin          accounthttp.Admin
 	Events         eventshttp.Events
+	Covers         eventshttp.Covers
 	Companies      companieshttp.Companies
+	Reports        reportshttp.Reports
 }
 
 // RegisterRoutes mounts v1 routes on the supplied group.
@@ -32,6 +37,10 @@ func RegisterRoutes(routes *gin.RouterGroup, dependencies Dependencies) {
 	accounthttp.RegisterSessionRoutes(routes, dependencies.Sessions, dependencies.SessionCookies)
 	accounthttp.RegisterOAuthRoutes(routes, dependencies.OAuth)
 	accounthttp.RegisterProfileRoutes(routes, dependencies.Profiles, dependencies.Authenticator)
+	accounthttp.RegisterAvatarRoutes(routes, dependencies.Avatars, dependencies.Authenticator)
+	accounthttp.RegisterAdminRoutes(routes, dependencies.Admin, dependencies.Authenticator)
 	eventshttp.RegisterRoutes(routes, dependencies.Events, dependencies.Authenticator)
+	eventshttp.RegisterCoverRoutes(routes, dependencies.Covers, dependencies.Authenticator)
 	companieshttp.RegisterRoutes(routes, dependencies.Companies, dependencies.Authenticator)
+	reportshttp.RegisterRoutes(routes, dependencies.Reports, dependencies.Authenticator)
 }

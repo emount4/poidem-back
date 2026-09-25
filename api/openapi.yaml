@@ -158,6 +158,7 @@ paths:
       tags: [Users]
       summary: Upload avatar
       x-error-codes:
+        '400': [VALIDATION_ERROR]
         '401': [UNAUTHORIZED]
         '403': [USER_BANNED]
         '413': [AVATAR_TOO_LARGE]
@@ -179,6 +180,7 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/AvatarResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '413': {$ref: '#/components/responses/PayloadTooLarge'}
         '415': {$ref: '#/components/responses/UnsupportedMediaType'}
         '401': {$ref: '#/components/responses/Unauthorized'}
@@ -301,6 +303,43 @@ paths:
             application/json:
               schema: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
 
+  /uploads/events:
+    post:
+      operationId: uploadEventCover
+      tags: [Events]
+      summary: Upload a temporary event cover
+      description: The returned URL may be used by the same user in POST or PATCH event. Unlinked uploads expire after 24 hours.
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '413': [EVENT_COVER_TOO_LARGE]
+        '415': [UNSUPPORTED_EVENT_COVER_TYPE]
+        '429': [RATE_LIMITED]
+        '503': [EVENT_COVER_UPLOAD_FAILED]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary, description: JPEG, PNG or WebP up to 10 MiB}
+      responses:
+        '201':
+          description: Temporary cover uploaded
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EventCoverUpload'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '413': {description: File is too large, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '415': {description: Unsupported image type, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '429': {description: Upload rate limit exceeded, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '503': {description: Object storage is unavailable, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+
   /events:
     get:
       operationId: listEvents
@@ -314,8 +353,15 @@ paths:
         - {name: search, in: query, schema: {type: string}}
         - {name: cityId, in: query, schema: {type: integer, format: int64}}
         - {name: categoryId, in: query, schema: {type: integer, format: int64}}
-        - {name: dateFrom, in: query, description: Inclusive boundary with timezone offset, schema: {type: string, format: date-time}}
-        - {name: dateTo, in: query, description: Inclusive boundary with timezone offset, schema: {type: string, format: date-time}}
+        - {name: from, in: query, description: Inclusive event start boundary with timezone offset, schema: {type: string, format: date-time}}
+        - {name: to, in: query, description: Inclusive event start boundary with timezone offset, schema: {type: string, format: date-time}}
+        - {name: dateFrom, in: query, deprecated: true, description: Legacy alias for from, schema: {type: string, format: date-time}}
+        - {name: dateTo, in: query, deprecated: true, description: Legacy alias for to, schema: {type: string, format: date-time}}
+        - {name: west, in: query, description: Viewport west longitude; all four bounds are required together, schema: {type: number, minimum: -180, maximum: 180}}
+        - {name: south, in: query, description: Viewport south latitude; all four bounds are required together, schema: {type: number, minimum: -90, maximum: 90}}
+        - {name: east, in: query, description: Viewport east longitude; west greater than east denotes antimeridian crossing, schema: {type: number, minimum: -180, maximum: 180}}
+        - {name: north, in: query, description: Viewport north latitude; all four bounds are required together, schema: {type: number, minimum: -90, maximum: 90}}
+        - {name: status, in: query, description: Public catalog always contains only active events, schema: {type: string, enum: [active], default: active}}
         - {name: sort, in: query, schema: {type: string, enum: [popular, date, newest]}}
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit'}
@@ -349,6 +395,7 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {description: Event creation rate limit exceeded, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   /events/{eventId}:
     get:
       operationId: getEvent
@@ -367,6 +414,34 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Event'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateOwnEvent
+      tags: [Events]
+      summary: Update an event owned by the current user
+      description: Pending, rejected and active events are editable. Editing an active event returns it to pending moderation.
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateEvent'}
+      responses:
+        '200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      operationId: deleteOwnEvent
+      tags: [Events]
+      summary: Soft-delete an event owned by the current user
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
   /events/{eventId}/participants:
     get:
@@ -981,6 +1056,16 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
         '409': {$ref: '#/components/responses/Conflict'}
+    delete:
+      operationId: deleteAdminEvent
+      tags: [Admin]
+      summary: Soft-delete an event as administrator
+      parameters: [{$ref: '#/components/parameters/EventId'}]
+      responses:
+        '204': {description: Deleted}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /admin/events/{eventId}/{action}:
     post:
       operationId: moderateEvent
@@ -988,6 +1073,7 @@ paths:
       summary: Moderate event
       description: Allowed transitions are pending to active/rejected and active to blocked. Completion is performed by the system clock rule.
       x-error-codes:
+        '400': [VALIDATION_ERROR]
         '401': [UNAUTHORIZED]
         '403': [USER_BANNED, FORBIDDEN]
         '404': [EVENT_NOT_FOUND]
@@ -995,10 +1081,20 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/EventId'}
         - {name: action, in: path, required: true, schema: {type: string, enum: [approve, reject, block]}}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: {type: string, minLength: 1, maxLength: 1000, nullable: true, description: Required for reject and block}
       responses:
         '200':
           description: Status changed
           content: {application/json: {schema: {$ref: '#/components/schemas/Event'}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
         '404': {$ref: '#/components/responses/NotFound'}
@@ -1239,7 +1335,7 @@ components:
       additionalProperties: false
       required: [title, categoryId, cityId, startsAt, locationName]
       properties:
-        title: {type: string, minLength: 1, maxLength: 200}
+        title: {type: string, minLength: 1, maxLength: 140}
         description: {type: string, maxLength: 5000, nullable: true}
         categoryId: {type: integer, format: int64, minimum: 1}
         cityId: {type: integer, format: int64, minimum: 1}
@@ -1247,13 +1343,17 @@ components:
         endsAt: {type: string, format: date-time, nullable: true, description: Must be later than startsAt when present}
         locationName: {type: string, minLength: 1, maxLength: 255}
         address: {type: string, maxLength: 500, nullable: true}
+        location:
+          type: object
+          nullable: true
+          allOf: [{$ref: '#/components/schemas/EventLocation'}]
         imageUrl: {type: string, format: uri, nullable: true}
     UpdateEvent:
       type: object
       additionalProperties: false
       description: Partial admin update; omitted fields are unchanged
       properties:
-        title: {type: string, minLength: 1, maxLength: 200}
+        title: {type: string, minLength: 1, maxLength: 140}
         description: {type: string, maxLength: 5000, nullable: true}
         categoryId: {type: integer, format: int64, minimum: 1}
         cityId: {type: integer, format: int64, minimum: 1}
@@ -1261,15 +1361,28 @@ components:
         endsAt: {type: string, format: date-time, nullable: true}
         locationName: {type: string, minLength: 1, maxLength: 255}
         address: {type: string, maxLength: 500, nullable: true}
+        location:
+          type: object
+          nullable: true
+          allOf: [{$ref: '#/components/schemas/EventLocation'}]
         imageUrl: {type: string, format: uri, nullable: true}
+    EventLocation:
+      type: object
+      additionalProperties: false
+      required: [latitude, longitude, source]
+      properties:
+        latitude: {type: number, format: double, minimum: -90, maximum: 90}
+        longitude: {type: number, format: double, minimum: -180, maximum: 180}
+        source: {type: string, enum: [manual, geocoded]}
     Event:
       allOf:
         - {$ref: '#/components/schemas/EventInput'}
         - type: object
-          required: [id, description, endsAt, address, imageUrl, status, participantsCount, companiesCount, creator, createdAt, updatedAt]
+          required: [id, description, endsAt, address, location, imageUrl, status, moderationReason, participantsCount, companiesCount, creator, createdAt, updatedAt]
           properties:
             id: {type: integer, format: int64, minimum: 1}
             status: {$ref: '#/components/schemas/EventStatus'}
+            moderationReason: {type: string, maxLength: 1000, nullable: true}
             participantsCount: {type: integer, minimum: 0}
             companiesCount: {type: integer, minimum: 0}
             creator: {$ref: '#/components/schemas/UserShort'}
@@ -1343,7 +1456,7 @@ components:
     ApplicationResolutionReason:
       type: string
       nullable: true
-      enum: [COMPANY_BLOCKED, EVENT_COMPLETED]
+      enum: [COMPANY_BLOCKED, EVENT_COMPLETED, EVENT_DELETED]
     Application:
       type: object
       required: [id, companyId, user, message, status, resolutionReason, createdAt, resolvedAt]
@@ -1430,6 +1543,12 @@ components:
       required: [avatarUrl]
       properties:
         avatarUrl: {type: string, format: uri}
+    EventCoverUpload:
+      type: object
+      required: [url]
+      additionalProperties: false
+      properties:
+        url: {type: string, format: uri}
     Pagination:
       type: object
       required: [page, limit, total, totalPages]
@@ -1499,4 +1618,13 @@ components:
         - AVATAR_TOO_LARGE
         - UNSUPPORTED_AVATAR_TYPE
         - AVATAR_UPLOAD_FAILED
+        - EVENT_FORBIDDEN
+        - EVENT_NOT_EDITABLE
+        - EVENT_COVER_TOO_LARGE
+        - UNSUPPORTED_EVENT_COVER_TYPE
+        - EVENT_COVER_UPLOAD_FAILED
+        - RATE_LIMITED
+        - APPLICANT_BANNED
+        - CANNOT_CHANGE_OWN_STATUS
+        - CANNOT_BAN_ADMIN
 

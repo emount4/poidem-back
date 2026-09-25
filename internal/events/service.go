@@ -19,6 +19,9 @@ var (
 	ErrAlreadyEventParticipant = errors.New("already event participant")
 	ErrAlreadyInEventCompany   = errors.New("already in event company")
 	ErrNotSoloParticipant      = errors.New("not solo participant")
+	ErrForbidden               = errors.New("event operation forbidden")
+	ErrNotEditable             = errors.New("event is not editable")
+	ErrCoverNotOwned           = errors.New("event cover is not owned by user")
 )
 
 type ValidationError struct{ Fields map[string][]string }
@@ -34,7 +37,9 @@ type Store interface {
 	ListAdmin(context.Context, AdminFilter, Page) ([]Event, int64, error)
 	GetAdmin(context.Context, int64) (Event, error)
 	Update(context.Context, int64, Patch) (Event, error)
-	Transition(context.Context, int64, string) (Event, error)
+	UpdateOwned(context.Context, int64, int64, Patch, time.Time) (Event, error)
+	Delete(context.Context, int64, *int64, time.Time) error
+	Transition(context.Context, int64, string, *string, time.Time) (Event, error)
 	JoinSolo(context.Context, int64, int64, time.Time) error
 	CancelSolo(context.Context, int64, int64) error
 }
@@ -48,7 +53,7 @@ func NewService(store Store) *Service { return &Service{store: store, now: time.
 
 func (s *Service) Create(ctx context.Context, creatorID int64, input CreateInput) (Event, error) {
 	normalizeInput(&input)
-	if fields := validateInput(input); len(fields) > 0 {
+	if fields := validateInput(input, s.now()); len(fields) > 0 {
 		return Event{}, &ValidationError{Fields: fields}
 	}
 	return s.store.Create(ctx, creatorID, input)
@@ -90,11 +95,40 @@ func (s *Service) Update(ctx context.Context, id int64, patch Patch) (Event, err
 	return s.store.Update(ctx, id, patch)
 }
 
-func (s *Service) Transition(ctx context.Context, id int64, action string) (Event, error) {
+func (s *Service) UpdateOwned(ctx context.Context, id, userID int64, patch Patch) (Event, error) {
+	normalizePatch(&patch)
+	fields := validatePatch(patch)
+	if patch.StartsAt.Set && !patch.StartsAt.Value.After(s.now()) {
+		fields["startsAt"] = []string{"Дата начала должна быть в будущем"}
+	}
+	if len(fields) > 0 {
+		return Event{}, &ValidationError{Fields: fields}
+	}
+	return s.store.UpdateOwned(ctx, id, userID, patch, s.now())
+}
+
+func (s *Service) DeleteOwned(ctx context.Context, id, userID int64) error {
+	return s.store.Delete(ctx, id, &userID, s.now())
+}
+
+func (s *Service) DeleteAdmin(ctx context.Context, id int64) error {
+	return s.store.Delete(ctx, id, nil, s.now())
+}
+
+func (s *Service) Transition(ctx context.Context, id int64, action string, reason *string) (Event, error) {
 	if action != "approve" && action != "reject" && action != "block" {
 		return Event{}, ErrInvalidStatusTransition
 	}
-	return s.store.Transition(ctx, id, action)
+	reason = normalizeOptional(reason)
+	fields := make(map[string][]string)
+	if action != "approve" && (reason == nil || *reason == "") {
+		fields["reason"] = []string{"Причина обязательна для отклонения или блокировки"}
+	}
+	validateOptionalString(fields, "reason", reason, 1000)
+	if len(fields) > 0 {
+		return Event{}, &ValidationError{Fields: fields}
+	}
+	return s.store.Transition(ctx, id, action, reason, s.now())
 }
 
 func (s *Service) JoinSolo(ctx context.Context, eventID, userID int64) error {
@@ -111,6 +145,12 @@ func normalizeInput(input *CreateInput) {
 	input.Description = normalizeOptional(input.Description)
 	input.Address = normalizeOptional(input.Address)
 	input.ImageURL = normalizeOptional(input.ImageURL)
+	if input.Location != nil {
+		input.Location.Source = strings.TrimSpace(input.Location.Source)
+		if input.Location.Source == "" {
+			input.Location.Source = "manual"
+		}
+	}
 }
 
 func normalizePatch(patch *Patch) {
@@ -123,6 +163,12 @@ func normalizePatch(patch *Patch) {
 	normalizeNullable(&patch.Description)
 	normalizeNullable(&patch.Address)
 	normalizeNullable(&patch.ImageURL)
+	if patch.Location.Set && !patch.Location.Null {
+		patch.Location.Value.Source = strings.TrimSpace(patch.Location.Value.Source)
+		if patch.Location.Value.Source == "" {
+			patch.Location.Value.Source = "manual"
+		}
+	}
 }
 
 func normalizeOptional(value *string) *string {
@@ -139,9 +185,9 @@ func normalizeNullable(change *NullableChange[string]) {
 	}
 }
 
-func validateInput(input CreateInput) map[string][]string {
+func validateInput(input CreateInput, now time.Time) map[string][]string {
 	fields := make(map[string][]string)
-	validateRequiredString(fields, "title", input.Title, 200)
+	validateRequiredString(fields, "title", input.Title, 140)
 	validateRequiredString(fields, "locationName", input.LocationName, 255)
 	validateOptionalString(fields, "description", input.Description, 5000)
 	validateOptionalString(fields, "address", input.Address, 500)
@@ -154,17 +200,20 @@ func validateInput(input CreateInput) map[string][]string {
 	}
 	if input.StartsAt.IsZero() {
 		fields["startsAt"] = []string{"Обязательное поле"}
+	} else if !input.StartsAt.After(now) {
+		fields["startsAt"] = []string{"Дата начала должна быть в будущем"}
 	}
 	if input.EndsAt != nil && !input.EndsAt.After(input.StartsAt) {
 		fields["endsAt"] = []string{"Должно быть позже startsAt"}
 	}
+	validateLocation(fields, input.Location)
 	return fields
 }
 
 func validatePatch(patch Patch) map[string][]string {
 	fields := make(map[string][]string)
 	if patch.Title.Set {
-		validateRequiredString(fields, "title", patch.Title.Value, 200)
+		validateRequiredString(fields, "title", patch.Title.Value, 140)
 	}
 	if patch.LocationName.Set {
 		validateRequiredString(fields, "locationName", patch.LocationName.Value, 255)
@@ -190,7 +239,26 @@ func validatePatch(patch Patch) map[string][]string {
 	if patch.StartsAt.Set && patch.StartsAt.Value.IsZero() {
 		fields["startsAt"] = []string{"Некорректная дата"}
 	}
+	if patch.Location.Set && !patch.Location.Null {
+		location := patch.Location.Value
+		validateLocation(fields, &location)
+	}
 	return fields
+}
+
+func validateLocation(fields map[string][]string, location *Location) {
+	if location == nil {
+		return
+	}
+	if location.Latitude < -90 || location.Latitude > 90 {
+		fields["location.latitude"] = []string{"Значение должно быть от -90 до 90"}
+	}
+	if location.Longitude < -180 || location.Longitude > 180 {
+		fields["location.longitude"] = []string{"Значение должно быть от -180 до 180"}
+	}
+	if location.Source != "manual" && location.Source != "geocoded" {
+		fields["location.source"] = []string{"Допустимые значения: manual, geocoded"}
+	}
 }
 
 func validateRequiredString(fields map[string][]string, name, value string, maximum int) {

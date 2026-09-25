@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	accounthttp "github.com/emount4/poidem-back/internal/account/httpv1"
 	"github.com/emount4/poidem-back/internal/api/apierr"
 	"github.com/emount4/poidem-back/internal/api/pagination"
+	"github.com/emount4/poidem-back/internal/api/ratelimit"
 	"github.com/emount4/poidem-back/internal/events"
 	"github.com/gin-gonic/gin"
 )
@@ -31,7 +33,10 @@ type Events interface {
 	ListAdmin(context.Context, events.AdminFilter, events.Page) ([]events.Event, int64, error)
 	GetAdmin(context.Context, int64) (events.Event, error)
 	Update(context.Context, int64, events.Patch) (events.Event, error)
-	Transition(context.Context, int64, string) (events.Event, error)
+	UpdateOwned(context.Context, int64, int64, events.Patch) (events.Event, error)
+	DeleteOwned(context.Context, int64, int64) error
+	DeleteAdmin(context.Context, int64) error
+	Transition(context.Context, int64, string, *string) (events.Event, error)
 	JoinSolo(context.Context, int64, int64) error
 	CancelSolo(context.Context, int64, int64) error
 }
@@ -46,8 +51,11 @@ func RegisterRoutes(routes *gin.RouterGroup, service Events, authenticator accou
 
 	protected := routes.Group("")
 	protected.Use(accounthttp.RequireAuthentication(authenticator))
+	createLimiter := ratelimit.New(30, time.Hour)
 	protected.GET("/users/me/events", h.listMine)
-	protected.POST("/events", accounthttp.RequireCompleteProfile(), h.create)
+	protected.POST("/events", accounthttp.RequireCompleteProfile(), createLimiter.Middleware(), h.create)
+	protected.PATCH("/events/:eventId", accounthttp.RequireCompleteProfile(), h.updateOwned)
+	protected.DELETE("/events/:eventId", h.deleteOwned)
 	protected.POST("/events/:eventId/solo-participation", accounthttp.RequireCompleteProfile(), h.joinSolo)
 	protected.DELETE("/events/:eventId/solo-participation", h.cancelSolo)
 
@@ -56,6 +64,7 @@ func RegisterRoutes(routes *gin.RouterGroup, service Events, authenticator accou
 	admin.GET("/events", h.listAdmin)
 	admin.GET("/events/:eventId", h.getAdmin)
 	admin.PATCH("/events/:eventId", h.updateAdmin)
+	admin.DELETE("/events/:eventId", h.deleteAdmin)
 	admin.POST("/events/:eventId/:action", h.moderate)
 }
 
@@ -199,12 +208,63 @@ func (h handler) updateAdmin(c *gin.Context) {
 	c.JSON(http.StatusOK, newEventResponse(item))
 }
 
+func (h handler) updateOwned(c *gin.Context) {
+	id, ok := eventID(c)
+	if !ok {
+		return
+	}
+	var request eventPatchRequest
+	if fields := decodeJSON(c, &request); len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	patch, fields := request.patch()
+	if len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	item, err := h.events.UpdateOwned(c.Request.Context(), id, principal.UserID, patch)
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusOK, newEventResponse(item))
+}
+
+func (h handler) deleteOwned(c *gin.Context) {
+	id, ok := eventID(c)
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.events.DeleteOwned(c.Request.Context(), id, principal.UserID)) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h handler) deleteAdmin(c *gin.Context) {
+	id, ok := eventID(c)
+	if !ok {
+		return
+	}
+	if h.writeError(c, h.events.DeleteAdmin(c.Request.Context(), id)) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h handler) moderate(c *gin.Context) {
 	id, ok := eventID(c)
 	if !ok {
 		return
 	}
-	item, err := h.events.Transition(c.Request.Context(), id, c.Param("action"))
+	var request moderationRequest
+	if fields := decodeOptionalJSON(c, &request); len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	item, err := h.events.Transition(c.Request.Context(), id, c.Param("action"), request.Reason)
 	if h.writeError(c, err) {
 		return
 	}
@@ -259,6 +319,12 @@ func (h handler) writeError(c *gin.Context, err error) bool {
 		apierr.Write(c, http.StatusConflict, "ALREADY_IN_EVENT_COMPANY", "Пользователь уже состоит в компании этого события", nil)
 	case errors.Is(err, events.ErrNotSoloParticipant):
 		apierr.Write(c, http.StatusConflict, "NOT_SOLO_PARTICIPANT", "Пользователь не участвует в событии самостоятельно", nil)
+	case errors.Is(err, events.ErrForbidden):
+		apierr.Write(c, http.StatusForbidden, "EVENT_FORBIDDEN", "Изменять событие может только его автор или администратор", nil)
+	case errors.Is(err, events.ErrNotEditable):
+		apierr.Write(c, http.StatusConflict, "EVENT_NOT_EDITABLE", "Событие в текущем статусе нельзя изменить", nil)
+	case errors.Is(err, events.ErrCoverNotOwned):
+		apierr.WriteValidation(c, apierr.FieldErrors{"imageUrl": {"Обложка не принадлежит пользователю или уже привязана к другому событию"}})
 	default:
 		apierr.WriteInternal(c, err)
 	}
@@ -266,15 +332,26 @@ func (h handler) writeError(c *gin.Context, err error) bool {
 }
 
 type eventInputRequest struct {
-	Title        string  `json:"title"`
-	Description  *string `json:"description"`
-	CategoryID   int64   `json:"categoryId"`
-	CityID       int64   `json:"cityId"`
-	StartsAt     string  `json:"startsAt"`
-	EndsAt       *string `json:"endsAt"`
-	LocationName string  `json:"locationName"`
-	Address      *string `json:"address"`
-	ImageURL     *string `json:"imageUrl"`
+	Title        string           `json:"title"`
+	Description  *string          `json:"description"`
+	CategoryID   int64            `json:"categoryId"`
+	CityID       int64            `json:"cityId"`
+	StartsAt     string           `json:"startsAt"`
+	EndsAt       *string          `json:"endsAt"`
+	LocationName string           `json:"locationName"`
+	Address      *string          `json:"address"`
+	Location     *locationRequest `json:"location"`
+	ImageURL     *string          `json:"imageUrl"`
+}
+
+type locationRequest struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Source    string  `json:"source"`
+}
+
+func (r locationRequest) location() events.Location {
+	return events.Location{Latitude: r.Latitude, Longitude: r.Longitude, Source: r.Source}
 }
 
 func (r eventInputRequest) input() (events.CreateInput, apierr.FieldErrors) {
@@ -292,7 +369,12 @@ func (r eventInputRequest) input() (events.CreateInput, apierr.FieldErrors) {
 			endsAt = &value
 		}
 	}
-	return events.CreateInput{Title: r.Title, Description: r.Description, CategoryID: r.CategoryID, CityID: r.CityID, StartsAt: startsAt, EndsAt: endsAt, LocationName: r.LocationName, Address: r.Address, ImageURL: r.ImageURL}, fields
+	var location *events.Location
+	if r.Location != nil {
+		value := r.Location.location()
+		location = &value
+	}
+	return events.CreateInput{Title: r.Title, Description: r.Description, CategoryID: r.CategoryID, CityID: r.CityID, StartsAt: startsAt, EndsAt: endsAt, LocationName: r.LocationName, Address: r.Address, Location: location, ImageURL: r.ImageURL}, fields
 }
 
 type patchField[T any] struct {
@@ -311,15 +393,16 @@ func (f *patchField[T]) UnmarshalJSON(data []byte) error {
 }
 
 type eventPatchRequest struct {
-	Title        patchField[string] `json:"title"`
-	Description  patchField[string] `json:"description"`
-	CategoryID   patchField[int64]  `json:"categoryId"`
-	CityID       patchField[int64]  `json:"cityId"`
-	StartsAt     patchField[string] `json:"startsAt"`
-	EndsAt       patchField[string] `json:"endsAt"`
-	LocationName patchField[string] `json:"locationName"`
-	Address      patchField[string] `json:"address"`
-	ImageURL     patchField[string] `json:"imageUrl"`
+	Title        patchField[string]          `json:"title"`
+	Description  patchField[string]          `json:"description"`
+	CategoryID   patchField[int64]           `json:"categoryId"`
+	CityID       patchField[int64]           `json:"cityId"`
+	StartsAt     patchField[string]          `json:"startsAt"`
+	EndsAt       patchField[string]          `json:"endsAt"`
+	LocationName patchField[string]          `json:"locationName"`
+	Address      patchField[string]          `json:"address"`
+	Location     patchField[locationRequest] `json:"location"`
+	ImageURL     patchField[string]          `json:"imageUrl"`
 }
 
 func (r eventPatchRequest) patch() (events.Patch, apierr.FieldErrors) {
@@ -361,8 +444,13 @@ func (r eventPatchRequest) patch() (events.Patch, apierr.FieldErrors) {
 		Title: events.Change[string]{Set: r.Title.Present, Value: r.Title.Value}, Description: events.NullableChange[string]{Set: r.Description.Present, Null: r.Description.Null, Value: r.Description.Value},
 		CategoryID: events.Change[int64]{Set: r.CategoryID.Present, Value: r.CategoryID.Value}, CityID: events.Change[int64]{Set: r.CityID.Present, Value: r.CityID.Value},
 		StartsAt: events.Change[time.Time]{Set: r.StartsAt.Present, Value: startsAt}, EndsAt: events.NullableChange[time.Time]{Set: r.EndsAt.Present, Null: r.EndsAt.Null, Value: endsAt},
-		LocationName: events.Change[string]{Set: r.LocationName.Present, Value: r.LocationName.Value}, Address: events.NullableChange[string]{Set: r.Address.Present, Null: r.Address.Null, Value: r.Address.Value}, ImageURL: events.NullableChange[string]{Set: r.ImageURL.Present, Null: r.ImageURL.Null, Value: r.ImageURL.Value},
+		LocationName: events.Change[string]{Set: r.LocationName.Present, Value: r.LocationName.Value}, Address: events.NullableChange[string]{Set: r.Address.Present, Null: r.Address.Null, Value: r.Address.Value},
+		Location: events.NullableChange[events.Location]{Set: r.Location.Present, Null: r.Location.Null, Value: r.Location.Value.location()}, ImageURL: events.NullableChange[string]{Set: r.ImageURL.Present, Null: r.ImageURL.Null, Value: r.ImageURL.Value},
 	}, fields
+}
+
+type moderationRequest struct {
+	Reason *string `json:"reason"`
 }
 
 type userShortResponse struct {
@@ -381,13 +469,20 @@ type eventResponse struct {
 	EndsAt            *time.Time        `json:"endsAt"`
 	LocationName      string            `json:"locationName"`
 	Address           *string           `json:"address"`
+	Location          *locationResponse `json:"location"`
 	ImageURL          *string           `json:"imageUrl"`
 	Status            string            `json:"status"`
+	ModerationReason  *string           `json:"moderationReason"`
 	ParticipantsCount int64             `json:"participantsCount"`
 	CompaniesCount    int64             `json:"companiesCount"`
 	Creator           userShortResponse `json:"creator"`
 	CreatedAt         time.Time         `json:"createdAt"`
 	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+type locationResponse struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Source    string  `json:"source"`
 }
 type myEventResponse struct {
 	eventResponse
@@ -398,7 +493,11 @@ func newUserShortResponse(item events.UserShort) userShortResponse {
 	return userShortResponse{ID: item.ID, FirstName: item.FirstName, LastName: item.LastName, AvatarURL: item.AvatarURL}
 }
 func newEventResponse(item events.Event) eventResponse {
-	return eventResponse{ID: item.ID, Title: item.Title, Description: item.Description, CategoryID: item.CategoryID, CityID: item.CityID, StartsAt: item.StartsAt, EndsAt: item.EndsAt, LocationName: item.LocationName, Address: item.Address, ImageURL: item.ImageURL, Status: item.Status, ParticipantsCount: item.ParticipantsCount, CompaniesCount: item.CompaniesCount, Creator: newUserShortResponse(item.Creator), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	response := eventResponse{ID: item.ID, Title: item.Title, Description: item.Description, CategoryID: item.CategoryID, CityID: item.CityID, StartsAt: item.StartsAt, EndsAt: item.EndsAt, LocationName: item.LocationName, Address: item.Address, ImageURL: item.ImageURL, Status: item.Status, ModerationReason: item.ModerationReason, ParticipantsCount: item.ParticipantsCount, CompaniesCount: item.CompaniesCount, Creator: newUserShortResponse(item.Creator), CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	if item.Location != nil {
+		response.Location = &locationResponse{Latitude: item.Location.Latitude, Longitude: item.Location.Longitude, Source: item.Location.Source}
+	}
+	return response
 }
 func mapEvents(items []events.Event) []eventResponse {
 	result := make([]eventResponse, 0, len(items))
@@ -413,6 +512,22 @@ func decodeJSON(c *gin.Context, target any) apierr.FieldErrors {
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		return apierr.FieldErrors{"body": {"Некорректный JSON"}}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return apierr.FieldErrors{"body": {"Ожидается один JSON-объект"}}
+	}
+	return apierr.FieldErrors{}
+}
+
+func decodeOptionalJSON(c *gin.Context, target any) apierr.FieldErrors {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxEventBodyBytes)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		if errors.Is(err, io.EOF) {
+			return apierr.FieldErrors{}
+		}
 		return apierr.FieldErrors{"body": {"Некорректный JSON"}}
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
@@ -448,14 +563,83 @@ func parsePublicFilter(values url.Values) (events.PublicFilter, apierr.FieldErro
 	fields = mergeFields(fields, f)
 	category, f := positiveIDQuery(values, "categoryId")
 	fields = mergeFields(fields, f)
-	from, f := timeQuery(values, "dateFrom")
+	from, f := aliasedTimeQuery(values, "from", "dateFrom")
 	fields = mergeFields(fields, f)
-	to, f := timeQuery(values, "dateTo")
+	to, f := aliasedTimeQuery(values, "to", "dateTo")
 	fields = mergeFields(fields, f)
 	if from != nil && to != nil && to.Before(*from) {
-		fields["dateTo"] = []string{"Должно быть не раньше dateFrom"}
+		fields["to"] = []string{"Должно быть не раньше from"}
 	}
-	return events.PublicFilter{Search: search, Sort: sort, CityID: city, CategoryID: category, DateFrom: from, DateTo: to}, fields
+	_, f = enumQuery(values, "status", "active", "active")
+	fields = mergeFields(fields, f)
+	bounds, f := boundsQuery(values)
+	fields = mergeFields(fields, f)
+	return events.PublicFilter{Search: search, Sort: sort, CityID: city, CategoryID: category, DateFrom: from, DateTo: to, Bounds: bounds}, fields
+}
+
+func aliasedTimeQuery(values url.Values, primary, legacy string) (*time.Time, apierr.FieldErrors) {
+	_, primarySet := values[primary]
+	_, legacySet := values[legacy]
+	if primarySet && legacySet {
+		return nil, apierr.FieldErrors{primary: {"Нельзя одновременно передавать " + primary + " и " + legacy}}
+	}
+	if primarySet {
+		return timeQuery(values, primary)
+	}
+	return timeQuery(values, legacy)
+}
+
+func boundsQuery(values url.Values) (*events.Bounds, apierr.FieldErrors) {
+	names := []string{"west", "south", "east", "north"}
+	present := 0
+	for _, name := range names {
+		if _, ok := values[name]; ok {
+			present++
+		}
+	}
+	if present == 0 {
+		return nil, apierr.FieldErrors{}
+	}
+	if present != len(names) {
+		return nil, apierr.FieldErrors{"bounds": {"Параметры west, south, east и north должны передаваться вместе"}}
+	}
+	parsed := make(map[string]float64, len(names))
+	fields := apierr.FieldErrors{}
+	for _, name := range names {
+		raw := values[name]
+		if len(raw) != 1 {
+			fields[name] = []string{"Параметр должен быть указан один раз"}
+			continue
+		}
+		value, err := strconv.ParseFloat(raw[0], 64)
+		if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			fields[name] = []string{"Должно быть числом"}
+			continue
+		}
+		parsed[name] = value
+	}
+	if len(fields) > 0 {
+		return nil, fields
+	}
+	if parsed["west"] < -180 || parsed["west"] > 180 {
+		fields["west"] = []string{"Значение должно быть от -180 до 180"}
+	}
+	if parsed["east"] < -180 || parsed["east"] > 180 {
+		fields["east"] = []string{"Значение должно быть от -180 до 180"}
+	}
+	if parsed["south"] < -90 || parsed["south"] > 90 {
+		fields["south"] = []string{"Значение должно быть от -90 до 90"}
+	}
+	if parsed["north"] < -90 || parsed["north"] > 90 {
+		fields["north"] = []string{"Значение должно быть от -90 до 90"}
+	}
+	if parsed["south"] > parsed["north"] {
+		fields["north"] = []string{"Должно быть не меньше south"}
+	}
+	if len(fields) > 0 {
+		return nil, fields
+	}
+	return &events.Bounds{West: parsed["west"], South: parsed["south"], East: parsed["east"], North: parsed["north"]}, fields
 }
 
 func optionalQuery(values url.Values, name string) (string, apierr.FieldErrors) {

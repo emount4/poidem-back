@@ -24,6 +24,19 @@ type UserShort struct {
 	AvatarURL *string
 }
 
+type Location struct {
+	Latitude  float64
+	Longitude float64
+	Source    string
+}
+
+type Bounds struct {
+	West  float64
+	South float64
+	East  float64
+	North float64
+}
+
 type Event struct {
 	ID                int64
 	Title             string
@@ -34,8 +47,10 @@ type Event struct {
 	EndsAt            *time.Time
 	LocationName      string
 	Address           *string
+	Location          *Location
 	ImageURL          *string
 	Status            string
+	ModerationReason  *string
 	ParticipantsCount int64
 	CompaniesCount    int64
 	Creator           UserShort
@@ -57,6 +72,7 @@ type CreateInput struct {
 	EndsAt       *time.Time
 	LocationName string
 	Address      *string
+	Location     *Location
 	ImageURL     *string
 }
 
@@ -80,6 +96,7 @@ type Patch struct {
 	EndsAt       NullableChange[time.Time]
 	LocationName Change[string]
 	Address      NullableChange[string]
+	Location     NullableChange[Location]
 	ImageURL     NullableChange[string]
 }
 
@@ -94,6 +111,7 @@ type PublicFilter struct {
 	CategoryID *int64
 	DateFrom   *time.Time
 	DateTo     *time.Time
+	Bounds     *Bounds
 	Sort       string
 	Now        time.Time
 }

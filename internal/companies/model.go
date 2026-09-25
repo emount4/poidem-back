@@ -19,7 +19,12 @@ const (
 	RoleMember = "member"
 )
 
-const ApplicationStatusPending = "pending"
+const (
+	ApplicationStatusPending   = "pending"
+	ApplicationStatusApproved  = "approved"
+	ApplicationStatusRejected  = "rejected"
+	ApplicationStatusCancelled = "cancelled"
+)
 
 type UserShort struct {
 	ID        int64

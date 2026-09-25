@@ -13,9 +13,21 @@ import (
 )
 
 type Config struct {
-	Postgres Postgres
-	Auth     Auth
-	OAuth    OAuth
+	Postgres             Postgres
+	Auth                 Auth
+	OAuth                OAuth
+	Storage              Storage
+	BootstrapAdminUserID int64
+}
+
+type Storage struct {
+	Endpoint  string
+	PublicURL string
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	Region    string
+	UseSSL    bool
 }
 
 type Auth struct {
@@ -73,6 +85,13 @@ func Load(path string) (*Config, error) {
 	}}
 	if cfg.Postgres.Password == "" {
 		return nil, fmt.Errorf("POSTGRES_PASSWORD is required")
+	}
+	if raw := strings.TrimSpace(os.Getenv("BOOTSTRAP_ADMIN_USER_ID")); raw != "" {
+		value, parseErr := strconv.ParseInt(raw, 10, 64)
+		if parseErr != nil || value <= 0 {
+			return nil, fmt.Errorf("BOOTSTRAP_ADMIN_USER_ID must be a positive integer")
+		}
+		cfg.BootstrapAdminUserID = value
 	}
 	switch cfg.Postgres.SSLMode {
 	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
@@ -145,6 +164,24 @@ func Load(path string) (*Config, error) {
 	}
 	if (cfg.OAuth.GoogleClientID == "") != (cfg.OAuth.GoogleClientSecret == "") {
 		return nil, fmt.Errorf("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set together")
+	}
+	storageSSL, err := strconv.ParseBool(env("S3_USE_SSL", "false"))
+	if err != nil {
+		return nil, fmt.Errorf("S3_USE_SSL must be true or false")
+	}
+	cfg.Storage = Storage{
+		Endpoint: env("S3_ENDPOINT", "localhost:9000"), PublicURL: strings.TrimRight(env("S3_PUBLIC_URL", "http://localhost:9000"), "/"),
+		AccessKey: env("S3_ACCESS_KEY", "poidem_minio"), SecretKey: env("S3_SECRET_KEY", "poidem_minio_secret"),
+		Bucket: env("S3_BUCKET", "poidem-media"), Region: env("S3_REGION", "us-east-1"), UseSSL: storageSSL,
+	}
+	if strings.Contains(cfg.Storage.Endpoint, "://") || strings.TrimSpace(cfg.Storage.Endpoint) == "" {
+		return nil, fmt.Errorf("S3_ENDPOINT must be host:port without a URL scheme")
+	}
+	if err := validateBaseURL("S3_PUBLIC_URL", cfg.Storage.PublicURL); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cfg.Storage.AccessKey) == "" || strings.TrimSpace(cfg.Storage.SecretKey) == "" || strings.TrimSpace(cfg.Storage.Bucket) == "" {
+		return nil, fmt.Errorf("S3_ACCESS_KEY, S3_SECRET_KEY and S3_BUCKET are required")
 	}
 	return cfg, nil
 }

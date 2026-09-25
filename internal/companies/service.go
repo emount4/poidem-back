@@ -10,21 +10,24 @@ import (
 )
 
 var (
-	ErrNotFound                 = errors.New("company not found")
-	ErrEventNotFound            = errors.New("event not found")
-	ErrEventNotAvailable        = errors.New("event not available")
-	ErrAlreadyInEventCompany    = errors.New("already in event company")
-	ErrNotOwner                 = errors.New("not company owner")
-	ErrCompanyBlocked           = errors.New("company blocked")
-	ErrCapacityBelowMembers     = errors.New("company capacity below members")
-	ErrCompanyFull              = errors.New("company full")
-	ErrCompanyClosed            = errors.New("company closed")
-	ErrAlreadyCompanyMember     = errors.New("already company member")
-	ErrOwnerCannotLeave         = errors.New("owner cannot leave")
-	ErrNotCompanyMember         = errors.New("not company member")
-	ErrUserNotFound             = errors.New("user not found")
-	ErrOwnerCannotBeRemoved     = errors.New("owner cannot be removed")
-	ErrApplicationAlreadyExists = errors.New("application already exists")
+	ErrNotFound                   = errors.New("company not found")
+	ErrEventNotFound              = errors.New("event not found")
+	ErrEventNotAvailable          = errors.New("event not available")
+	ErrAlreadyInEventCompany      = errors.New("already in event company")
+	ErrNotOwner                   = errors.New("not company owner")
+	ErrCompanyBlocked             = errors.New("company blocked")
+	ErrCapacityBelowMembers       = errors.New("company capacity below members")
+	ErrCompanyFull                = errors.New("company full")
+	ErrCompanyClosed              = errors.New("company closed")
+	ErrAlreadyCompanyMember       = errors.New("already company member")
+	ErrOwnerCannotLeave           = errors.New("owner cannot leave")
+	ErrNotCompanyMember           = errors.New("not company member")
+	ErrUserNotFound               = errors.New("user not found")
+	ErrUserBanned                 = errors.New("user banned")
+	ErrOwnerCannotBeRemoved       = errors.New("owner cannot be removed")
+	ErrApplicationAlreadyExists   = errors.New("application already exists")
+	ErrApplicationNotFound        = errors.New("application not found")
+	ErrApplicationAlreadyResolved = errors.New("application already resolved")
 )
 
 type ValidationError struct{ Fields map[string][]string }
@@ -37,6 +40,8 @@ type Store interface {
 	GetVisible(context.Context, int64, Viewer) (Company, error)
 	ListMembers(context.Context, int64, Viewer, Page) ([]UserShort, int64, error)
 	ListMine(context.Context, int64, Page) ([]Company, int64, error)
+	ListAdmin(context.Context, Page) ([]Company, int64, error)
+	Block(context.Context, int64, time.Time) (Company, error)
 	Update(context.Context, int64, int64, Patch, time.Time) (Company, error)
 	SetRecruitment(context.Context, int64, int64, string, time.Time) (Company, error)
 	Delete(context.Context, int64, int64, time.Time) error
@@ -44,6 +49,11 @@ type Store interface {
 	Leave(context.Context, int64, int64) error
 	RemoveMember(context.Context, int64, int64, int64) error
 	CreateApplication(context.Context, int64, int64, CreateApplicationInput, time.Time) (Application, error)
+	GetMyApplication(context.Context, int64, int64) (Application, error)
+	ListApplications(context.Context, int64, int64, string, Page) ([]Application, int64, error)
+	ListMyApplications(context.Context, int64, Page) ([]Application, int64, error)
+	CancelApplication(context.Context, int64, int64, time.Time) error
+	ResolveApplication(context.Context, int64, int64, int64, string, time.Time) (Application, error)
 }
 
 type Service struct {
@@ -75,6 +85,14 @@ func (s *Service) ListMembers(ctx context.Context, companyID int64, viewer Viewe
 
 func (s *Service) ListMine(ctx context.Context, userID int64, page Page) ([]Company, int64, error) {
 	return s.store.ListMine(ctx, userID, page)
+}
+
+func (s *Service) ListAdmin(ctx context.Context, page Page) ([]Company, int64, error) {
+	return s.store.ListAdmin(ctx, page)
+}
+
+func (s *Service) Block(ctx context.Context, companyID int64) (Company, error) {
+	return s.store.Block(ctx, companyID, s.now())
 }
 
 func (s *Service) Update(ctx context.Context, companyID, ownerID int64, patch Patch) (Company, error) {
@@ -117,6 +135,29 @@ func (s *Service) CreateApplication(ctx context.Context, companyID, userID int64
 		return Application{}, &ValidationError{Fields: fields}
 	}
 	return s.store.CreateApplication(ctx, companyID, userID, input, s.now())
+}
+
+func (s *Service) GetMyApplication(ctx context.Context, companyID, userID int64) (Application, error) {
+	return s.store.GetMyApplication(ctx, companyID, userID)
+}
+
+func (s *Service) ListApplications(ctx context.Context, companyID, ownerID int64, status string, page Page) ([]Application, int64, error) {
+	return s.store.ListApplications(ctx, companyID, ownerID, status, page)
+}
+
+func (s *Service) ListMyApplications(ctx context.Context, userID int64, page Page) ([]Application, int64, error) {
+	return s.store.ListMyApplications(ctx, userID, page)
+}
+
+func (s *Service) CancelApplication(ctx context.Context, companyID, userID int64) error {
+	return s.store.CancelApplication(ctx, companyID, userID, s.now())
+}
+
+func (s *Service) ResolveApplication(ctx context.Context, companyID, applicationID, ownerID int64, action string) (Application, error) {
+	if action != "approve" && action != "reject" {
+		return Application{}, ErrApplicationNotFound
+	}
+	return s.store.ResolveApplication(ctx, companyID, applicationID, ownerID, action, s.now())
 }
 
 func normalizeInput(input *CreateInput) {

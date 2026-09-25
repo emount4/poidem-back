@@ -24,8 +24,12 @@ migrations              миграции PostgreSQL
 в `internal/app`.
 
 Общие HTTP middleware и маршрутизация версий находятся в `internal/api`.
-Конфигурация, логирование, PostgreSQL и Request ID находятся в
-`internal/platform`.
+Конфигурация, логирование, PostgreSQL, MinIO-адаптер аватаров и Request ID
+находятся в `internal/platform`.
+
+Файлы аватаров хранятся в публичном S3 bucket, а профиль содержит публичный URL
+и внутренний object key. Object key нужен для замены и удаления файла без разбора
+URL; бизнес-логика зависит только от интерфейса `AvatarStorage`.
 
 Транзакционные границы задают сервисы через небольшой `Transactor`. PostgreSQL
 реализация помещает `pgx.Tx` в context; адаптеры репозиториев получают текущий

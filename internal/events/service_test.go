@@ -36,7 +36,14 @@ func (s *storeStub) Update(_ context.Context, _ int64, patch Patch) (Event, erro
 	s.patched = patch
 	return Event{ID: 1}, nil
 }
-func (*storeStub) Transition(context.Context, int64, string) (Event, error) { return Event{}, nil }
+func (s *storeStub) UpdateOwned(_ context.Context, _ int64, _ int64, patch Patch, _ time.Time) (Event, error) {
+	s.patched = patch
+	return Event{ID: 1}, nil
+}
+func (*storeStub) Delete(context.Context, int64, *int64, time.Time) error { return nil }
+func (*storeStub) Transition(context.Context, int64, string, *string, time.Time) (Event, error) {
+	return Event{}, nil
+}
 func (s *storeStub) JoinSolo(_ context.Context, eventID, userID int64, _ time.Time) error {
 	s.joinedEventID, s.joinedUserID = eventID, userID
 	return nil
@@ -82,8 +89,31 @@ func TestUpdateValidatesURL(t *testing.T) {
 
 func TestTransitionRejectsUnknownAction(t *testing.T) {
 	service := NewService(&storeStub{})
-	if _, err := service.Transition(context.Background(), 1, "complete"); err != ErrInvalidStatusTransition {
+	if _, err := service.Transition(context.Background(), 1, "complete", nil); err != ErrInvalidStatusTransition {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestTransitionRequiresModerationReason(t *testing.T) {
+	service := NewService(&storeStub{})
+	if _, err := service.Transition(context.Background(), 1, "reject", nil); err == nil {
+		t.Fatal("reject without reason must fail")
+	}
+	reason := "  Не хватает информации  "
+	if _, err := service.Transition(context.Background(), 1, "reject", &reason); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCreateRejectsPastAndInvalidLocation(t *testing.T) {
+	service := NewService(&storeStub{})
+	_, err := service.Create(context.Background(), 7, CreateInput{
+		Title: "Встреча", CategoryID: 1, CityID: 1, StartsAt: time.Now().Add(-time.Minute),
+		LocationName: "Парк", Location: &Location{Latitude: 91, Longitude: 181, Source: "unknown"},
+	})
+	validation, ok := err.(*ValidationError)
+	if !ok || validation.Fields["startsAt"] == nil || validation.Fields["location.latitude"] == nil || validation.Fields["location.longitude"] == nil || validation.Fields["location.source"] == nil {
+		t.Fatalf("unexpected validation: %#v", err)
 	}
 }
 

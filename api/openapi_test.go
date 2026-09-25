@@ -92,8 +92,8 @@ func assertOperations(t *testing.T, document map[string]any) {
 			}
 		}
 	}
-	if len(operationIDs) != 53 {
-		t.Errorf("operation count = %d, want 53", len(operationIDs))
+	if len(operationIDs) != 57 {
+		t.Errorf("operation count = %d, want 57", len(operationIDs))
 	}
 }
 

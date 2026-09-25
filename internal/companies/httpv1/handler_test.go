@@ -50,6 +50,14 @@ func (s *companiesStub) ListMembers(context.Context, int64, companies.Viewer, co
 func (s *companiesStub) ListMine(context.Context, int64, companies.Page) ([]companies.Company, int64, error) {
 	return []companies.Company{}, 0, s.err
 }
+func (s *companiesStub) ListAdmin(context.Context, companies.Page) ([]companies.Company, int64, error) {
+	return []companies.Company{sampleCompany(7)}, 1, s.err
+}
+func (s *companiesStub) Block(context.Context, int64) (companies.Company, error) {
+	item := sampleCompany(7)
+	item.Status = companies.StatusBlocked
+	return item, s.err
+}
 func (s *companiesStub) Update(_ context.Context, _, _ int64, patch companies.Patch) (companies.Company, error) {
 	s.patched = patch
 	return sampleCompany(7), s.err
@@ -73,6 +81,25 @@ func (s *companiesStub) RemoveMember(_ context.Context, companyID, ownerID, user
 func (s *companiesStub) CreateApplication(_ context.Context, companyID, userID int64, input companies.CreateApplicationInput) (companies.Application, error) {
 	s.joinedCompanyID, s.joinedUserID, s.applicationInput = companyID, userID, input
 	return sampleApplication(userID), s.err
+}
+func (s *companiesStub) GetMyApplication(_ context.Context, _ int64, userID int64) (companies.Application, error) {
+	return sampleApplication(userID), s.err
+}
+func (s *companiesStub) ListApplications(context.Context, int64, int64, string, companies.Page) ([]companies.Application, int64, error) {
+	return []companies.Application{sampleApplication(9)}, 1, s.err
+}
+func (s *companiesStub) ListMyApplications(_ context.Context, userID int64, _ companies.Page) ([]companies.Application, int64, error) {
+	return []companies.Application{sampleApplication(userID)}, 1, s.err
+}
+func (s *companiesStub) CancelApplication(context.Context, int64, int64) error { return s.err }
+func (s *companiesStub) ResolveApplication(_ context.Context, _, _ int64, ownerID int64, action string) (companies.Application, error) {
+	item := sampleApplication(ownerID)
+	if action == "approve" {
+		item.Status = companies.ApplicationStatusApproved
+	} else {
+		item.Status = companies.ApplicationStatusRejected
+	}
+	return item, s.err
 }
 
 type authenticatorStub struct{}
@@ -249,6 +276,104 @@ func TestCreateCompanyApplicationAllowsEmptyBody(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"status":"pending"`) || !strings.Contains(response.Body.String(), `"message":null`) {
 		t.Fatalf("unexpected response: %s", response.Body.String())
+	}
+}
+
+func TestGetMyCompanyApplication(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+	request := httptest.NewRequest(http.MethodGet, "/companies/10/applications/me", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":20`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	service.err = companies.ErrApplicationNotFound
+	request = httptest.NewRequest(http.MethodGet, "/companies/10/applications/me", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "APPLICATION_NOT_FOUND") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestApplicationManagementRoutes(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+
+	for _, path := range []string{"/users/me/applications", "/companies/10/applications?status=pending"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set("Authorization", "Bearer complete")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total":1`) {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+
+	request := httptest.NewRequest(http.MethodDelete, "/companies/10/applications/me", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/companies/10/applications/20/approve", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"approved"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/companies/10/applications?status=unknown", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "VALIDATION_ERROR") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminCompanyRoutes(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+
+	request := httptest.NewRequest(http.MethodGet, "/admin/companies", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/admin/companies", nil)
+	request.Header.Set("Authorization", "Bearer admin")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total":1`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/admin/companies/10/block", nil)
+	request.Header.Set("Authorization", "Bearer admin")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"blocked"`) {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	service.err = companies.ErrCompanyBlocked
+	request = httptest.NewRequest(http.MethodPost, "/admin/companies/10/block", nil)
+	request.Header.Set("Authorization", "Bearer admin")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "COMPANY_BLOCKED") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

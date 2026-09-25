@@ -11,6 +11,52 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func (r *Repository) ReplaceAvatar(ctx context.Context, userID int64, publicURL, objectKey string) (*string, error) {
+	var oldKey *string
+	err := r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		if err := db.QueryRow(txCtx, `
+			SELECT avatar_object_key FROM users WHERE id = $1 FOR UPDATE
+		`, userID).Scan(&oldKey); errors.Is(err, pgx.ErrNoRows) {
+			return account.ErrUserNotFound
+		} else if err != nil {
+			return fmt.Errorf("lock avatar: %w", err)
+		}
+		if _, err := db.Exec(txCtx, `
+			UPDATE users
+			SET avatar_url = $2, avatar_object_key = $3, updated_at = now()
+			WHERE id = $1
+		`, userID, publicURL, objectKey); err != nil {
+			return fmt.Errorf("replace avatar: %w", err)
+		}
+		return nil
+	})
+	return oldKey, err
+}
+
+func (r *Repository) ClearAvatar(ctx context.Context, userID int64) (*string, error) {
+	var oldKey *string
+	err := r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		if err := db.QueryRow(txCtx, `
+			SELECT avatar_object_key FROM users WHERE id = $1 FOR UPDATE
+		`, userID).Scan(&oldKey); errors.Is(err, pgx.ErrNoRows) {
+			return account.ErrUserNotFound
+		} else if err != nil {
+			return fmt.Errorf("lock avatar: %w", err)
+		}
+		if _, err := db.Exec(txCtx, `
+			UPDATE users
+			SET avatar_url = NULL, avatar_object_key = NULL, updated_at = now()
+			WHERE id = $1
+		`, userID); err != nil {
+			return fmt.Errorf("clear avatar: %w", err)
+		}
+		return nil
+	})
+	return oldKey, err
+}
+
 func (r *Repository) Profile(ctx context.Context, userID int64) (account.Profile, error) {
 	db := platformpostgres.Executor(ctx, r.pool)
 	var profile account.Profile
