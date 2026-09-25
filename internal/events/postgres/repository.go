@@ -266,6 +266,82 @@ func (r *Repository) Transition(ctx context.Context, id int64, action string) (e
 	return result, err
 }
 
+func (r *Repository) JoinSolo(ctx context.Context, eventID, userID int64, now time.Time) error {
+	return r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		var status string
+		var startsAt time.Time
+		var endsAt *time.Time
+		err := db.QueryRow(txCtx, `
+			SELECT status, starts_at, ends_at
+			FROM events
+			WHERE id = $1
+			FOR UPDATE
+		`, eventID).Scan(&status, &startsAt, &endsAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return events.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock solo event: %w", err)
+		}
+		if !eventAcceptsParticipation(status, startsAt, endsAt, now) {
+			return events.ErrEventNotAvailable
+		}
+
+		var participationType string
+		err = db.QueryRow(txCtx, `
+			SELECT participation_type
+			FROM event_participants
+			WHERE event_id = $1 AND user_id = $2
+			FOR UPDATE
+		`, eventID, userID).Scan(&participationType)
+		switch {
+		case err == nil && participationType == "company":
+			return events.ErrAlreadyInEventCompany
+		case err == nil:
+			return events.ErrAlreadyEventParticipant
+		case !errors.Is(err, pgx.ErrNoRows):
+			return fmt.Errorf("check solo participation: %w", err)
+		}
+
+		if _, err := db.Exec(txCtx, `
+			INSERT INTO event_participants (
+				event_id, user_id, participation_type, company_id, joined_at
+			) VALUES ($1,$2,'solo',NULL,$3)
+		`, eventID, userID, now); err != nil {
+			return fmt.Errorf("insert solo participation: %w", err)
+		}
+		return nil
+	})
+}
+
+func (r *Repository) CancelSolo(ctx context.Context, eventID, userID int64) error {
+	return r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		var lockedID int64
+		err := db.QueryRow(txCtx, `SELECT id FROM events WHERE id = $1 FOR UPDATE`, eventID).Scan(&lockedID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return events.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock event for solo cancellation: %w", err)
+		}
+		var deletedUserID int64
+		err = db.QueryRow(txCtx, `
+			DELETE FROM event_participants
+			WHERE event_id = $1 AND user_id = $2 AND participation_type = 'solo'
+			RETURNING user_id
+		`, eventID, userID).Scan(&deletedUserID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return events.ErrNotSoloParticipant
+		}
+		if err != nil {
+			return fmt.Errorf("cancel solo participation: %w", err)
+		}
+		return nil
+	})
+}
+
 func (r *Repository) CompleteDue(ctx context.Context, now time.Time, limit int64) (int64, error) {
 	rows, err := platformpostgres.Executor(ctx, r.pool).Query(ctx, `
 		WITH due AS (
@@ -422,4 +498,14 @@ func nullableTime(change events.NullableChange[time.Time]) any {
 		return nil
 	}
 	return change.Value
+}
+
+func eventAcceptsParticipation(status string, startsAt time.Time, endsAt *time.Time, now time.Time) bool {
+	if status != events.StatusActive {
+		return false
+	}
+	if endsAt != nil {
+		return endsAt.After(now)
+	}
+	return startsAt.After(now)
 }

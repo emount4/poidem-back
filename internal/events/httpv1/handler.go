@@ -32,6 +32,8 @@ type Events interface {
 	GetAdmin(context.Context, int64) (events.Event, error)
 	Update(context.Context, int64, events.Patch) (events.Event, error)
 	Transition(context.Context, int64, string) (events.Event, error)
+	JoinSolo(context.Context, int64, int64) error
+	CancelSolo(context.Context, int64, int64) error
 }
 
 func RegisterRoutes(routes *gin.RouterGroup, service Events, authenticator accounthttp.Authenticator) {
@@ -46,6 +48,8 @@ func RegisterRoutes(routes *gin.RouterGroup, service Events, authenticator accou
 	protected.Use(accounthttp.RequireAuthentication(authenticator))
 	protected.GET("/users/me/events", h.listMine)
 	protected.POST("/events", accounthttp.RequireCompleteProfile(), h.create)
+	protected.POST("/events/:eventId/solo-participation", accounthttp.RequireCompleteProfile(), h.joinSolo)
+	protected.DELETE("/events/:eventId/solo-participation", h.cancelSolo)
 
 	admin := routes.Group("/admin")
 	admin.Use(accounthttp.RequireAuthentication(authenticator), accounthttp.RequireAdmin())
@@ -207,6 +211,30 @@ func (h handler) moderate(c *gin.Context) {
 	c.JSON(http.StatusOK, newEventResponse(item))
 }
 
+func (h handler) joinSolo(c *gin.Context) {
+	id, ok := eventID(c)
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.events.JoinSolo(c.Request.Context(), id, principal.UserID)) {
+		return
+	}
+	c.Status(http.StatusCreated)
+}
+
+func (h handler) cancelSolo(c *gin.Context) {
+	id, ok := eventID(c)
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.events.CancelSolo(c.Request.Context(), id, principal.UserID)) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (h handler) writeError(c *gin.Context, err error) bool {
 	if err == nil {
 		return false
@@ -223,6 +251,14 @@ func (h handler) writeError(c *gin.Context, err error) bool {
 		apierr.Write(c, http.StatusNotFound, "EVENT_NOT_FOUND", "Событие не найдено", nil)
 	case errors.Is(err, events.ErrInvalidStatusTransition):
 		apierr.Write(c, http.StatusConflict, "INVALID_STATUS_TRANSITION", "Недопустимый переход статуса события", nil)
+	case errors.Is(err, events.ErrEventNotAvailable):
+		apierr.Write(c, http.StatusConflict, "EVENT_NOT_AVAILABLE", "Событие недоступно для участия", nil)
+	case errors.Is(err, events.ErrAlreadyEventParticipant):
+		apierr.Write(c, http.StatusConflict, "ALREADY_EVENT_PARTICIPANT", "Пользователь уже участвует в событии", nil)
+	case errors.Is(err, events.ErrAlreadyInEventCompany):
+		apierr.Write(c, http.StatusConflict, "ALREADY_IN_EVENT_COMPANY", "Пользователь уже состоит в компании этого события", nil)
+	case errors.Is(err, events.ErrNotSoloParticipant):
+		apierr.Write(c, http.StatusConflict, "NOT_SOLO_PARTICIPANT", "Пользователь не участвует в событии самостоятельно", nil)
 	default:
 		apierr.WriteInternal(c, err)
 	}

@@ -15,6 +15,10 @@ var (
 	ErrCityNotFound            = errors.New("city not found")
 	ErrCategoryNotFound        = errors.New("event category not found")
 	ErrInvalidStatusTransition = errors.New("invalid event status transition")
+	ErrEventNotAvailable       = errors.New("event not available")
+	ErrAlreadyEventParticipant = errors.New("already event participant")
+	ErrAlreadyInEventCompany   = errors.New("already in event company")
+	ErrNotSoloParticipant      = errors.New("not solo participant")
 )
 
 type ValidationError struct{ Fields map[string][]string }
@@ -31,6 +35,8 @@ type Store interface {
 	GetAdmin(context.Context, int64) (Event, error)
 	Update(context.Context, int64, Patch) (Event, error)
 	Transition(context.Context, int64, string) (Event, error)
+	JoinSolo(context.Context, int64, int64, time.Time) error
+	CancelSolo(context.Context, int64, int64) error
 }
 
 type Service struct {
@@ -89,6 +95,14 @@ func (s *Service) Transition(ctx context.Context, id int64, action string) (Even
 		return Event{}, ErrInvalidStatusTransition
 	}
 	return s.store.Transition(ctx, id, action)
+}
+
+func (s *Service) JoinSolo(ctx context.Context, eventID, userID int64) error {
+	return s.store.JoinSolo(ctx, eventID, userID, s.now())
+}
+
+func (s *Service) CancelSolo(ctx context.Context, eventID, userID int64) error {
+	return s.store.CancelSolo(ctx, eventID, userID)
 }
 
 func normalizeInput(input *CreateInput) {

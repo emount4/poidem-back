@@ -13,7 +13,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type eventsStub struct{ created events.CreateInput }
+type eventsStub struct {
+	created          events.CreateInput
+	participationErr error
+	joinedEventID    int64
+	joinedUserID     int64
+}
 
 func (s *eventsStub) Create(_ context.Context, userID int64, input events.CreateInput) (events.Event, error) {
 	s.created = input
@@ -40,6 +45,13 @@ func (*eventsStub) Update(context.Context, int64, events.Patch) (events.Event, e
 }
 func (*eventsStub) Transition(context.Context, int64, string) (events.Event, error) {
 	return sampleEvent(1), nil
+}
+func (s *eventsStub) JoinSolo(_ context.Context, eventID, userID int64) error {
+	s.joinedEventID, s.joinedUserID = eventID, userID
+	return s.participationErr
+}
+func (s *eventsStub) CancelSolo(context.Context, int64, int64) error {
+	return s.participationErr
 }
 
 type authenticatorStub struct{}
@@ -102,6 +114,47 @@ func TestEventFiltersAndAdminAuthorization(t *testing.T) {
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestSoloParticipationRoutes(t *testing.T) {
+	service := &eventsStub{}
+	router := eventRouter(service)
+
+	request := httptest.NewRequest(http.MethodPost, "/events/3/solo-participation", nil)
+	request.Header.Set("Authorization", "Bearer incomplete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "PROFILE_INCOMPLETE") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/events/3/solo-participation", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || service.joinedEventID != 3 || service.joinedUserID != 7 {
+		t.Fatalf("status=%d event=%d user=%d", response.Code, service.joinedEventID, service.joinedUserID)
+	}
+
+	request = httptest.NewRequest(http.MethodDelete, "/events/3/solo-participation", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestSoloParticipationConflictMapping(t *testing.T) {
+	service := &eventsStub{participationErr: events.ErrAlreadyInEventCompany}
+	router := eventRouter(service)
+	request := httptest.NewRequest(http.MethodPost, "/events/3/solo-participation", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "ALREADY_IN_EVENT_COMPANY") {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }

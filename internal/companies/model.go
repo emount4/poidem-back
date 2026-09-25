@@ -19,6 +19,8 @@ const (
 	RoleMember = "member"
 )
 
+const ApplicationStatusPending = "pending"
+
 type UserShort struct {
 	ID        int64
 	FirstName string
@@ -47,6 +49,21 @@ type CreateInput struct {
 	MaxMembers  int
 	JoinType    string
 	Rules       *string
+}
+
+type Application struct {
+	ID               int64
+	CompanyID        int64
+	User             UserShort
+	Message          *string
+	Status           string
+	ResolutionReason *string
+	CreatedAt        time.Time
+	ResolvedAt       *time.Time
+}
+
+type CreateApplicationInput struct {
+	Message *string
 }
 
 type Change[T any] struct {

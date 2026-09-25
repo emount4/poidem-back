@@ -20,8 +20,12 @@ DO $$
 BEGIN
     IF (SELECT count(*) FROM information_schema.tables
         WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
-        AND table_name <> 'schema_migrations') <> 13 THEN
-        RAISE EXCEPTION 'Expected 13 application tables';
+        AND table_name IN (
+            'cities', 'interests', 'event_categories', 'users', 'auth_accounts',
+            'sessions', 'user_interests', 'events', 'companies', 'company_members',
+            'applications', 'event_participants', 'reports'
+        )) <> 13 THEN
+        RAISE EXCEPTION 'Missing one or more application tables';
     END IF;
     IF (SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname IN (
         'idx_events_city_start', 'idx_events_category', 'idx_events_status',
@@ -41,6 +45,10 @@ BEGIN
         'idx_companies_event_visible', 'idx_company_members_user_joined'
     )) <> 2 THEN
         RAISE EXCEPTION 'Missing company query indexes';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public'
+        AND indexname = 'uq_applications_pending_company_user') THEN
+        RAISE EXCEPTION 'Missing pending application uniqueness';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_events_time_range') THEN
         RAISE EXCEPTION 'Missing event time range constraint';
@@ -97,7 +105,10 @@ SELECT pg_temp.expect_sqlstate(
 );
 SELECT pg_temp.expect_sqlstate('INSERT INTO user_interests VALUES (1, 1)', '23505');
 SELECT pg_temp.expect_sqlstate('INSERT INTO company_members (company_id, user_id) VALUES (1, 1)', '23505');
-SELECT pg_temp.expect_sqlstate('INSERT INTO event_participants (event_id, user_id) VALUES (1, 1)', '23505');
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO event_participants (event_id, user_id, participation_type, company_id) VALUES (1, 1, ''company'', 1)',
+    '23505'
+);
 SELECT pg_temp.expect_sqlstate('INSERT INTO users (first_name) VALUES (NULL)', '23502');
 SELECT pg_temp.expect_sqlstate('UPDATE events SET city_id = 999 WHERE id = 1', '23503');
 SELECT pg_temp.expect_sqlstate('UPDATE event_participants SET company_id = 999 WHERE user_id = 1', '23503');
@@ -108,6 +119,11 @@ SELECT pg_temp.expect_sqlstate('UPDATE companies SET join_type = ''invalid''', '
 SELECT pg_temp.expect_sqlstate('UPDATE companies SET max_members = 1', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE company_members SET role = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE applications SET status = ''invalid''', '23514');
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO applications (company_id, user_id, status) VALUES (1, 2, ''pending'')',
+    '23505'
+);
+SELECT pg_temp.expect_sqlstate('UPDATE applications SET resolution_reason = ''INVALID''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE event_participants SET participation_type = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE event_participants SET company_id = 1 WHERE user_id = 2', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE reports SET status = ''invalid''', '23514');

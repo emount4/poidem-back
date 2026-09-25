@@ -7,8 +7,11 @@ import (
 )
 
 type storeStub struct {
-	created CreateInput
-	patched Patch
+	created       CreateInput
+	patched       Patch
+	joinedEventID int64
+	joinedUserID  int64
+	cancelled     bool
 }
 
 func (s *storeStub) Create(_ context.Context, _ int64, input CreateInput) (Event, error) {
@@ -34,6 +37,14 @@ func (s *storeStub) Update(_ context.Context, _ int64, patch Patch) (Event, erro
 	return Event{ID: 1}, nil
 }
 func (*storeStub) Transition(context.Context, int64, string) (Event, error) { return Event{}, nil }
+func (s *storeStub) JoinSolo(_ context.Context, eventID, userID int64, _ time.Time) error {
+	s.joinedEventID, s.joinedUserID = eventID, userID
+	return nil
+}
+func (s *storeStub) CancelSolo(context.Context, int64, int64) error {
+	s.cancelled = true
+	return nil
+}
 
 func TestCreateNormalizesAndValidates(t *testing.T) {
 	store := &storeStub{}
@@ -73,5 +84,22 @@ func TestTransitionRejectsUnknownAction(t *testing.T) {
 	service := NewService(&storeStub{})
 	if _, err := service.Transition(context.Background(), 1, "complete"); err != ErrInvalidStatusTransition {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestSoloParticipationDelegatesToStore(t *testing.T) {
+	store := &storeStub{}
+	service := NewService(store)
+	if err := service.JoinSolo(context.Background(), 3, 7); err != nil {
+		t.Fatal(err)
+	}
+	if store.joinedEventID != 3 || store.joinedUserID != 7 {
+		t.Fatalf("unexpected join: event=%d user=%d", store.joinedEventID, store.joinedUserID)
+	}
+	if err := service.CancelSolo(context.Background(), 3, 7); err != nil {
+		t.Fatal(err)
+	}
+	if !store.cancelled {
+		t.Fatal("cancel was not delegated")
 	}
 }

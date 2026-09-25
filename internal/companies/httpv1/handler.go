@@ -30,6 +30,10 @@ type Companies interface {
 	Update(context.Context, int64, int64, companies.Patch) (companies.Company, error)
 	SetRecruitment(context.Context, int64, int64, bool) (companies.Company, error)
 	Delete(context.Context, int64, int64) error
+	JoinOpen(context.Context, int64, int64) error
+	Leave(context.Context, int64, int64) error
+	RemoveMember(context.Context, int64, int64, int64) error
+	CreateApplication(context.Context, int64, int64, companies.CreateApplicationInput) (companies.Application, error)
 }
 
 func RegisterRoutes(routes *gin.RouterGroup, service Companies, authenticator accounthttp.Authenticator) {
@@ -48,6 +52,10 @@ func RegisterRoutes(routes *gin.RouterGroup, service Companies, authenticator ac
 	protected.DELETE("/companies/:companyId", h.delete)
 	protected.POST("/companies/:companyId/close", h.closeRecruitment)
 	protected.POST("/companies/:companyId/open", h.openRecruitment)
+	protected.POST("/companies/:companyId/join", accounthttp.RequireCompleteProfile(), h.joinOpen)
+	protected.DELETE("/companies/:companyId/members/me", h.leave)
+	protected.DELETE("/companies/:companyId/members/:userId", h.removeMember)
+	protected.POST("/companies/:companyId/applications", accounthttp.RequireCompleteProfile(), h.createApplication)
 }
 
 type handler struct{ companies Companies }
@@ -189,6 +197,64 @@ func (h handler) delete(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+func (h handler) joinOpen(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.companies.JoinOpen(c.Request.Context(), companyID, principal.UserID)) {
+		return
+	}
+	c.Status(http.StatusCreated)
+}
+
+func (h handler) leave(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.companies.Leave(c.Request.Context(), companyID, principal.UserID)) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h handler) removeMember(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	userID, ok := positivePathID(c, "userId", "USER_NOT_FOUND", "Пользователь не найден")
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	if h.writeError(c, h.companies.RemoveMember(c.Request.Context(), companyID, principal.UserID, userID)) {
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h handler) createApplication(c *gin.Context) {
+	companyID, ok := positivePathID(c, "companyId", "COMPANY_NOT_FOUND", "Компания не найдена")
+	if !ok {
+		return
+	}
+	principal, _ := account.PrincipalFromContext(c.Request.Context())
+	var request applicationInputRequest
+	if fields := decodeOptionalJSON(c, &request); len(fields) > 0 {
+		apierr.WriteValidation(c, fields)
+		return
+	}
+	item, err := h.companies.CreateApplication(c.Request.Context(), companyID, principal.UserID, companies.CreateApplicationInput{Message: request.Message})
+	if h.writeError(c, err) {
+		return
+	}
+	c.JSON(http.StatusCreated, newApplicationResponse(item))
+}
+
 func (h handler) writeError(c *gin.Context, err error) bool {
 	if err == nil {
 		return false
@@ -211,6 +277,22 @@ func (h handler) writeError(c *gin.Context, err error) bool {
 		apierr.Write(c, http.StatusConflict, "COMPANY_BLOCKED", "Компания заблокирована", nil)
 	case errors.Is(err, companies.ErrCapacityBelowMembers):
 		apierr.Write(c, http.StatusConflict, "COMPANY_CAPACITY_BELOW_MEMBERS", "Лимит меньше текущего состава компании", nil)
+	case errors.Is(err, companies.ErrCompanyFull):
+		apierr.Write(c, http.StatusConflict, "COMPANY_FULL", "В компании нет свободных мест", nil)
+	case errors.Is(err, companies.ErrCompanyClosed):
+		apierr.Write(c, http.StatusConflict, "COMPANY_CLOSED", "Открытое вступление в компанию недоступно", nil)
+	case errors.Is(err, companies.ErrAlreadyCompanyMember):
+		apierr.Write(c, http.StatusConflict, "ALREADY_COMPANY_MEMBER", "Пользователь уже состоит в этой компании", nil)
+	case errors.Is(err, companies.ErrOwnerCannotLeave):
+		apierr.Write(c, http.StatusConflict, "OWNER_CANNOT_LEAVE", "Владелец не может покинуть компанию", nil)
+	case errors.Is(err, companies.ErrNotCompanyMember):
+		apierr.Write(c, http.StatusConflict, "NOT_COMPANY_MEMBER", "Пользователь не состоит в компании", nil)
+	case errors.Is(err, companies.ErrUserNotFound):
+		apierr.Write(c, http.StatusNotFound, "USER_NOT_FOUND", "Пользователь не найден", nil)
+	case errors.Is(err, companies.ErrOwnerCannotBeRemoved):
+		apierr.Write(c, http.StatusConflict, "OWNER_CANNOT_BE_REMOVED", "Владелец не может быть исключён из компании", nil)
+	case errors.Is(err, companies.ErrApplicationAlreadyExists):
+		apierr.Write(c, http.StatusConflict, "APPLICATION_ALREADY_EXISTS", "Активная заявка уже существует", nil)
 	default:
 		apierr.WriteInternal(c, err)
 	}
@@ -223,6 +305,10 @@ type companyInputRequest struct {
 	MaxMembers  int     `json:"maxMembers"`
 	JoinType    string  `json:"joinType"`
 	Rules       *string `json:"rules"`
+}
+
+type applicationInputRequest struct {
+	Message *string `json:"message"`
 }
 
 type patchField[T any] struct {
@@ -290,6 +376,17 @@ type companyResponse struct {
 	UpdatedAt    time.Time         `json:"updatedAt"`
 }
 
+type applicationResponse struct {
+	ID               int64             `json:"id"`
+	CompanyID        int64             `json:"companyId"`
+	User             userShortResponse `json:"user"`
+	Message          *string           `json:"message"`
+	Status           string            `json:"status"`
+	ResolutionReason *string           `json:"resolutionReason"`
+	CreatedAt        time.Time         `json:"createdAt"`
+	ResolvedAt       *time.Time        `json:"resolvedAt"`
+}
+
 func newUserShortResponse(item companies.UserShort) userShortResponse {
 	return userShortResponse{ID: item.ID, FirstName: item.FirstName, LastName: item.LastName, AvatarURL: item.AvatarURL}
 }
@@ -311,11 +408,35 @@ func mapCompanies(items []companies.Company) []companyResponse {
 	return result
 }
 
+func newApplicationResponse(item companies.Application) applicationResponse {
+	return applicationResponse{
+		ID: item.ID, CompanyID: item.CompanyID, User: newUserShortResponse(item.User),
+		Message: item.Message, Status: item.Status, ResolutionReason: item.ResolutionReason,
+		CreatedAt: item.CreatedAt, ResolvedAt: item.ResolvedAt,
+	}
+}
+
 func decodeJSON(c *gin.Context, target any) apierr.FieldErrors {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCompanyBodyBytes)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		return apierr.FieldErrors{"body": {"Некорректный JSON"}}
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return apierr.FieldErrors{"body": {"Ожидается один JSON-объект"}}
+	}
+	return apierr.FieldErrors{}
+}
+
+func decodeOptionalJSON(c *gin.Context, target any) apierr.FieldErrors {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxCompanyBodyBytes)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		if errors.Is(err, io.EOF) {
+			return apierr.FieldErrors{}
+		}
 		return apierr.FieldErrors{"body": {"Некорректный JSON"}}
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {

@@ -10,13 +10,21 @@ import (
 )
 
 var (
-	ErrNotFound              = errors.New("company not found")
-	ErrEventNotFound         = errors.New("event not found")
-	ErrEventNotAvailable     = errors.New("event not available")
-	ErrAlreadyInEventCompany = errors.New("already in event company")
-	ErrNotOwner              = errors.New("not company owner")
-	ErrCompanyBlocked        = errors.New("company blocked")
-	ErrCapacityBelowMembers  = errors.New("company capacity below members")
+	ErrNotFound                 = errors.New("company not found")
+	ErrEventNotFound            = errors.New("event not found")
+	ErrEventNotAvailable        = errors.New("event not available")
+	ErrAlreadyInEventCompany    = errors.New("already in event company")
+	ErrNotOwner                 = errors.New("not company owner")
+	ErrCompanyBlocked           = errors.New("company blocked")
+	ErrCapacityBelowMembers     = errors.New("company capacity below members")
+	ErrCompanyFull              = errors.New("company full")
+	ErrCompanyClosed            = errors.New("company closed")
+	ErrAlreadyCompanyMember     = errors.New("already company member")
+	ErrOwnerCannotLeave         = errors.New("owner cannot leave")
+	ErrNotCompanyMember         = errors.New("not company member")
+	ErrUserNotFound             = errors.New("user not found")
+	ErrOwnerCannotBeRemoved     = errors.New("owner cannot be removed")
+	ErrApplicationAlreadyExists = errors.New("application already exists")
 )
 
 type ValidationError struct{ Fields map[string][]string }
@@ -32,6 +40,10 @@ type Store interface {
 	Update(context.Context, int64, int64, Patch, time.Time) (Company, error)
 	SetRecruitment(context.Context, int64, int64, string, time.Time) (Company, error)
 	Delete(context.Context, int64, int64, time.Time) error
+	JoinOpen(context.Context, int64, int64, time.Time) error
+	Leave(context.Context, int64, int64) error
+	RemoveMember(context.Context, int64, int64, int64) error
+	CreateApplication(context.Context, int64, int64, CreateApplicationInput, time.Time) (Application, error)
 }
 
 type Service struct {
@@ -83,6 +95,28 @@ func (s *Service) SetRecruitment(ctx context.Context, companyID, ownerID int64, 
 
 func (s *Service) Delete(ctx context.Context, companyID, ownerID int64) error {
 	return s.store.Delete(ctx, companyID, ownerID, s.now())
+}
+
+func (s *Service) JoinOpen(ctx context.Context, companyID, userID int64) error {
+	return s.store.JoinOpen(ctx, companyID, userID, s.now())
+}
+
+func (s *Service) Leave(ctx context.Context, companyID, userID int64) error {
+	return s.store.Leave(ctx, companyID, userID)
+}
+
+func (s *Service) RemoveMember(ctx context.Context, companyID, ownerID, userID int64) error {
+	return s.store.RemoveMember(ctx, companyID, ownerID, userID)
+}
+
+func (s *Service) CreateApplication(ctx context.Context, companyID, userID int64, input CreateApplicationInput) (Application, error) {
+	input.Message = normalizeOptional(input.Message)
+	fields := make(map[string][]string)
+	validateOptional(fields, "message", input.Message, 1000)
+	if len(fields) > 0 {
+		return Application{}, &ValidationError{Fields: fields}
+	}
+	return s.store.CreateApplication(ctx, companyID, userID, input, s.now())
 }
 
 func normalizeInput(input *CreateInput) {

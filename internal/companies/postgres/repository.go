@@ -10,6 +10,7 @@ import (
 	"github.com/emount4/poidem-back/internal/companies"
 	platformpostgres "github.com/emount4/poidem-back/internal/platform/postgres"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -341,6 +342,367 @@ func (r *Repository) Delete(ctx context.Context, companyID, ownerID int64, now t
 	})
 }
 
+func (r *Repository) JoinOpen(ctx context.Context, companyID, userID int64, now time.Time) error {
+	return r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		var eventID int64
+		err := db.QueryRow(txCtx, `
+			SELECT event_id FROM companies
+			WHERE id = $1 AND deleted_at IS NULL
+		`, companyID).Scan(&eventID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("find company event: %w", err)
+		}
+
+		var eventStatus string
+		var startsAt time.Time
+		var endsAt *time.Time
+		err = db.QueryRow(txCtx, `
+			SELECT status, starts_at, ends_at FROM events
+			WHERE id = $1
+			FOR UPDATE
+		`, eventID).Scan(&eventStatus, &startsAt, &endsAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock company event for join: %w", err)
+		}
+
+		var companyStatus, joinType string
+		var maxMembers int64
+		err = db.QueryRow(txCtx, `
+			SELECT status, join_type, max_members FROM companies
+			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		`, companyID, eventID).Scan(&companyStatus, &joinType, &maxMembers)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock company for open join: %w", err)
+		}
+		if companyStatus != companies.StatusActive || joinType != companies.JoinTypeOpen {
+			return companies.ErrCompanyClosed
+		}
+		if !eventAvailable(eventStatus, startsAt, endsAt, now) {
+			return companies.ErrEventNotAvailable
+		}
+
+		var marker int
+		err = db.QueryRow(txCtx, `
+			SELECT 1 FROM company_members
+			WHERE company_id = $1 AND user_id = $2
+		`, companyID, userID).Scan(&marker)
+		if err == nil {
+			return companies.ErrAlreadyCompanyMember
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check target company membership: %w", err)
+		}
+
+		err = db.QueryRow(txCtx, `
+			SELECT 1
+			FROM company_members cm
+			JOIN companies c ON c.id = cm.company_id
+			WHERE cm.user_id = $1 AND c.event_id = $2 AND c.deleted_at IS NULL
+			LIMIT 1
+		`, userID, eventID).Scan(&marker)
+		if err == nil {
+			return companies.ErrAlreadyInEventCompany
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check event company membership: %w", err)
+		}
+
+		var membersCount int64
+		if err := db.QueryRow(txCtx, `SELECT count(*) FROM company_members WHERE company_id = $1`, companyID).Scan(&membersCount); err != nil {
+			return fmt.Errorf("count company capacity: %w", err)
+		}
+		if membersCount >= maxMembers {
+			return companies.ErrCompanyFull
+		}
+
+		var participationType string
+		participationExists := true
+		err = db.QueryRow(txCtx, `
+			SELECT participation_type FROM event_participants
+			WHERE event_id = $1 AND user_id = $2
+			FOR UPDATE
+		`, eventID, userID).Scan(&participationType)
+		if errors.Is(err, pgx.ErrNoRows) {
+			participationExists = false
+		} else if err != nil {
+			return fmt.Errorf("lock participation for company join: %w", err)
+		} else if participationType == "company" {
+			return companies.ErrAlreadyInEventCompany
+		}
+
+		if _, err := db.Exec(txCtx, `
+			INSERT INTO company_members (company_id, user_id, role, joined_at)
+			VALUES ($1,$2,$3,$4)
+		`, companyID, userID, companies.RoleMember, now); err != nil {
+			return fmt.Errorf("insert company member: %w", err)
+		}
+		if participationExists {
+			if _, err := db.Exec(txCtx, `
+				UPDATE event_participants
+				SET participation_type = 'company', company_id = $3, joined_at = $4
+				WHERE event_id = $1 AND user_id = $2
+			`, eventID, userID, companyID, now); err != nil {
+				return fmt.Errorf("convert solo participation to company: %w", err)
+			}
+		} else if _, err := db.Exec(txCtx, `
+			INSERT INTO event_participants (
+				event_id, user_id, participation_type, company_id, joined_at
+			) VALUES ($1,$2,'company',$3,$4)
+		`, eventID, userID, companyID, now); err != nil {
+			return fmt.Errorf("insert company participation: %w", err)
+		}
+		return nil
+	})
+}
+
+func (r *Repository) Leave(ctx context.Context, companyID, userID int64) error {
+	return r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		var eventID int64
+		err := db.QueryRow(txCtx, `
+			SELECT event_id FROM companies
+			WHERE id = $1 AND deleted_at IS NULL
+		`, companyID).Scan(&eventID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("find company event for leave: %w", err)
+		}
+
+		var lockedEventID int64
+		err = db.QueryRow(txCtx, `SELECT id FROM events WHERE id = $1 FOR UPDATE`, eventID).Scan(&lockedEventID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock company event for leave: %w", err)
+		}
+
+		var ownerID int64
+		err = db.QueryRow(txCtx, `
+			SELECT owner_id FROM companies
+			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		`, companyID, eventID).Scan(&ownerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock company for leave: %w", err)
+		}
+		if ownerID == userID {
+			return companies.ErrOwnerCannotLeave
+		}
+
+		var deletedUserID int64
+		err = db.QueryRow(txCtx, `
+			DELETE FROM company_members
+			WHERE company_id = $1 AND user_id = $2
+			RETURNING user_id
+		`, companyID, userID).Scan(&deletedUserID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotCompanyMember
+		}
+		if err != nil {
+			return fmt.Errorf("remove company membership on leave: %w", err)
+		}
+		if _, err := db.Exec(txCtx, `
+			DELETE FROM event_participants
+			WHERE event_id = $1 AND user_id = $2 AND company_id = $3
+		`, eventID, userID, companyID); err != nil {
+			return fmt.Errorf("remove company participation on leave: %w", err)
+		}
+		return nil
+	})
+}
+
+func (r *Repository) RemoveMember(ctx context.Context, companyID, ownerID, userID int64) error {
+	return r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		var eventID int64
+		err := db.QueryRow(txCtx, `
+			SELECT event_id FROM companies
+			WHERE id = $1 AND deleted_at IS NULL
+		`, companyID).Scan(&eventID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("find company event for member removal: %w", err)
+		}
+
+		var lockedEventID int64
+		err = db.QueryRow(txCtx, `SELECT id FROM events WHERE id = $1 FOR UPDATE`, eventID).Scan(&lockedEventID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock company event for member removal: %w", err)
+		}
+
+		var actualOwnerID int64
+		err = db.QueryRow(txCtx, `
+			SELECT owner_id FROM companies
+			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		`, companyID, eventID).Scan(&actualOwnerID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock company for member removal: %w", err)
+		}
+		if actualOwnerID != ownerID {
+			return companies.ErrNotOwner
+		}
+		if actualOwnerID == userID {
+			return companies.ErrOwnerCannotBeRemoved
+		}
+
+		var userExists bool
+		if err := db.QueryRow(txCtx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, userID).Scan(&userExists); err != nil {
+			return fmt.Errorf("check removed user: %w", err)
+		}
+		if !userExists {
+			return companies.ErrUserNotFound
+		}
+
+		var deletedUserID int64
+		err = db.QueryRow(txCtx, `
+			DELETE FROM company_members
+			WHERE company_id = $1 AND user_id = $2
+			RETURNING user_id
+		`, companyID, userID).Scan(&deletedUserID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotCompanyMember
+		}
+		if err != nil {
+			return fmt.Errorf("remove company member: %w", err)
+		}
+		if _, err := db.Exec(txCtx, `
+			DELETE FROM event_participants
+			WHERE event_id = $1 AND user_id = $2 AND company_id = $3
+		`, eventID, userID, companyID); err != nil {
+			return fmt.Errorf("remove company participation after kick: %w", err)
+		}
+		return nil
+	})
+}
+
+func (r *Repository) CreateApplication(ctx context.Context, companyID, userID int64, input companies.CreateApplicationInput, now time.Time) (companies.Application, error) {
+	var result companies.Application
+	err := r.transactions.WithinTransaction(ctx, func(txCtx context.Context) error {
+		db := platformpostgres.Executor(txCtx, r.pool)
+		var eventID int64
+		err := db.QueryRow(txCtx, `
+			SELECT event_id FROM companies
+			WHERE id = $1 AND deleted_at IS NULL
+		`, companyID).Scan(&eventID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("find application company event: %w", err)
+		}
+
+		var eventStatus string
+		var startsAt time.Time
+		var endsAt *time.Time
+		err = db.QueryRow(txCtx, `
+			SELECT status, starts_at, ends_at FROM events
+			WHERE id = $1
+			FOR UPDATE
+		`, eventID).Scan(&eventStatus, &startsAt, &endsAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock application event: %w", err)
+		}
+
+		var companyStatus, joinType string
+		err = db.QueryRow(txCtx, `
+			SELECT status, join_type FROM companies
+			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
+			FOR UPDATE
+		`, companyID, eventID).Scan(&companyStatus, &joinType)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return companies.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("lock application company: %w", err)
+		}
+		if companyStatus != companies.StatusActive || joinType != companies.JoinTypeRequest {
+			return companies.ErrCompanyClosed
+		}
+		if !eventAvailable(eventStatus, startsAt, endsAt, now) {
+			return companies.ErrEventNotAvailable
+		}
+
+		var marker int
+		err = db.QueryRow(txCtx, `SELECT 1 FROM company_members WHERE company_id = $1 AND user_id = $2`, companyID, userID).Scan(&marker)
+		if err == nil {
+			return companies.ErrAlreadyCompanyMember
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check application company membership: %w", err)
+		}
+		err = db.QueryRow(txCtx, `
+			SELECT 1
+			FROM company_members cm
+			JOIN companies c ON c.id = cm.company_id
+			WHERE cm.user_id = $1 AND c.event_id = $2 AND c.deleted_at IS NULL
+			LIMIT 1
+		`, userID, eventID).Scan(&marker)
+		if err == nil {
+			return companies.ErrAlreadyInEventCompany
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check application event membership: %w", err)
+		}
+
+		err = db.QueryRow(txCtx, `
+			SELECT 1 FROM applications
+			WHERE company_id = $1 AND user_id = $2 AND status = 'pending'
+		`, companyID, userID).Scan(&marker)
+		if err == nil {
+			return companies.ErrApplicationAlreadyExists
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("check pending application: %w", err)
+		}
+
+		var applicationID int64
+		err = db.QueryRow(txCtx, `
+			INSERT INTO applications (company_id, user_id, message, status, created_at)
+			VALUES ($1,$2,$3,$4,$5)
+			RETURNING id
+		`, companyID, userID, input.Message, companies.ApplicationStatusPending, now).Scan(&applicationID)
+		if err != nil {
+			var pgErr *pgconn.PgError
+			if errors.As(err, &pgErr) && pgErr.ConstraintName == "uq_applications_pending_company_user" {
+				return companies.ErrApplicationAlreadyExists
+			}
+			return fmt.Errorf("insert company application: %w", err)
+		}
+		result, err = r.getApplicationByID(txCtx, applicationID)
+		return err
+	})
+	return result, err
+}
+
 func (r *Repository) getByID(ctx context.Context, companyID int64) (companies.Company, error) {
 	return scanCompany(platformpostgres.Executor(ctx, r.pool).QueryRow(ctx,
 		`SELECT `+companyColumns+companyFrom+` WHERE c.id = $1 AND c.deleted_at IS NULL`, companyID))
@@ -379,6 +741,23 @@ func scanCompany(row rowScanner) (companies.Company, error) {
 	}
 	if err != nil {
 		return companies.Company{}, fmt.Errorf("scan company: %w", err)
+	}
+	return item, nil
+}
+
+func (r *Repository) getApplicationByID(ctx context.Context, applicationID int64) (companies.Application, error) {
+	var item companies.Application
+	err := platformpostgres.Executor(ctx, r.pool).QueryRow(ctx, `
+		SELECT a.id, a.company_id, u.id, u.first_name, u.last_name, u.avatar_url,
+			a.message, a.status, a.resolution_reason, a.created_at, a.resolved_at
+		FROM applications a
+		JOIN users u ON u.id = a.user_id
+		WHERE a.id = $1
+	`, applicationID).Scan(&item.ID, &item.CompanyID, &item.User.ID, &item.User.FirstName,
+		&item.User.LastName, &item.User.AvatarURL, &item.Message, &item.Status,
+		&item.ResolutionReason, &item.CreatedAt, &item.ResolvedAt)
+	if err != nil {
+		return companies.Application{}, fmt.Errorf("scan company application: %w", err)
 	}
 	return item, nil
 }

@@ -6,7 +6,9 @@
 ограничения событий дополнены миграцией
 [`000003_events_hardening.up.sql`](../migrations/000003_events_hardening.up.sql),
 а ограничения компаний и участия — миграцией
-[`000004_companies_hardening.up.sql`](../migrations/000004_companies_hardening.up.sql).
+[`000004_companies_hardening.up.sql`](../migrations/000004_companies_hardening.up.sql),
+ограничения заявок — миграцией
+[`000005_applications_hardening.up.sql`](../migrations/000005_applications_hardening.up.sql).
 Это 13 таблиц текущей базы.
 
 ```mermaid
@@ -112,6 +114,7 @@ erDiagram
         bigint user_id FK
         text message
         varchar status
+        varchar resolution_reason
         timestamptz created_at
         timestamptz resolved_at
     }
@@ -195,6 +198,10 @@ erDiagram
 `company` без компании. Составной внешний ключ `(company_id, event_id)` не даёт
 привязать участие к компании другого события.
 
+Миграция `000005` делает ключевые поля заявок обязательными, добавляет
+`resolution_reason` и частичный UNIQUE для одной pending-заявки на пару
+`(company_id, user_id)`.
+
 Mermaid не показывает все признаки `NOT NULL` и значения по умолчанию. Для них
 источником истины остаётся SQL-миграция, ссылка на которую приведена в начале.
 
@@ -203,7 +210,6 @@ Mermaid не показывает все признаки `NOT NULL` и знач
 Последующие миграции должны добавить:
 
 - ограничения для `users.role` и `users.status`;
-- частичный UNIQUE для одной pending-заявки на `(company_id, user_id)`;
 - обязательность и значения по умолчанию для полей, которые заполняет приложение;
 - индексы под сессии, личные списки и фоновые задачи.
 

@@ -14,12 +14,20 @@ import (
 )
 
 type companiesStub struct {
-	created    companies.CreateInput
-	eventID    int64
-	ownerID    int64
-	listViewer companies.Viewer
-	patched    companies.Patch
-	err        error
+	created          companies.CreateInput
+	eventID          int64
+	ownerID          int64
+	listViewer       companies.Viewer
+	patched          companies.Patch
+	joinedCompanyID  int64
+	joinedUserID     int64
+	leftCompanyID    int64
+	leftUserID       int64
+	removedCompanyID int64
+	removingOwnerID  int64
+	removedUserID    int64
+	applicationInput companies.CreateApplicationInput
+	err              error
 }
 
 func (s *companiesStub) Create(_ context.Context, eventID, ownerID int64, input companies.CreateInput) (companies.Company, error) {
@@ -50,6 +58,22 @@ func (s *companiesStub) SetRecruitment(context.Context, int64, int64, bool) (com
 	return sampleCompany(7), s.err
 }
 func (s *companiesStub) Delete(context.Context, int64, int64) error { return s.err }
+func (s *companiesStub) JoinOpen(_ context.Context, companyID, userID int64) error {
+	s.joinedCompanyID, s.joinedUserID = companyID, userID
+	return s.err
+}
+func (s *companiesStub) Leave(_ context.Context, companyID, userID int64) error {
+	s.leftCompanyID, s.leftUserID = companyID, userID
+	return s.err
+}
+func (s *companiesStub) RemoveMember(_ context.Context, companyID, ownerID, userID int64) error {
+	s.removedCompanyID, s.removingOwnerID, s.removedUserID = companyID, ownerID, userID
+	return s.err
+}
+func (s *companiesStub) CreateApplication(_ context.Context, companyID, userID int64, input companies.CreateApplicationInput) (companies.Application, error) {
+	s.joinedCompanyID, s.joinedUserID, s.applicationInput = companyID, userID, input
+	return sampleApplication(userID), s.err
+}
 
 type authenticatorStub struct{}
 
@@ -150,6 +174,84 @@ func TestUpdateCompanyPreservesNullablePatchSemantics(t *testing.T) {
 	}
 }
 
+func TestJoinOpenCompanyRequiresCompleteProfile(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+
+	request := httptest.NewRequest(http.MethodPost, "/companies/10/join", nil)
+	request.Header.Set("Authorization", "Bearer incomplete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "PROFILE_INCOMPLETE") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	request = httptest.NewRequest(http.MethodPost, "/companies/10/join", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || service.joinedCompanyID != 10 || service.joinedUserID != 7 {
+		t.Fatalf("status=%d company=%d user=%d", response.Code, service.joinedCompanyID, service.joinedUserID)
+	}
+}
+
+func TestLeaveCompany(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+	request := httptest.NewRequest(http.MethodDelete, "/companies/10/members/me", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || service.leftCompanyID != 10 || service.leftUserID != 7 {
+		t.Fatalf("status=%d company=%d user=%d", response.Code, service.leftCompanyID, service.leftUserID)
+	}
+
+	service.err = companies.ErrOwnerCannotLeave
+	request = httptest.NewRequest(http.MethodDelete, "/companies/10/members/me", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "OWNER_CANNOT_LEAVE") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestRemoveCompanyMember(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+	request := httptest.NewRequest(http.MethodDelete, "/companies/10/members/9", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || service.removedCompanyID != 10 || service.removingOwnerID != 7 || service.removedUserID != 9 {
+		t.Fatalf("status=%d company=%d owner=%d user=%d", response.Code, service.removedCompanyID, service.removingOwnerID, service.removedUserID)
+	}
+
+	service.err = companies.ErrOwnerCannotBeRemoved
+	request = httptest.NewRequest(http.MethodDelete, "/companies/10/members/7", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "OWNER_CANNOT_BE_REMOVED") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCreateCompanyApplicationAllowsEmptyBody(t *testing.T) {
+	service := &companiesStub{}
+	router := companyRouter(service)
+	request := httptest.NewRequest(http.MethodPost, "/companies/10/applications", nil)
+	request.Header.Set("Authorization", "Bearer complete")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || service.joinedCompanyID != 10 || service.joinedUserID != 7 {
+		t.Fatalf("status=%d body=%s company=%d user=%d", response.Code, response.Body.String(), service.joinedCompanyID, service.joinedUserID)
+	}
+	if !strings.Contains(response.Body.String(), `"status":"pending"`) || !strings.Contains(response.Body.String(), `"message":null`) {
+		t.Fatalf("unexpected response: %s", response.Body.String())
+	}
+}
+
 func companyRouter(service Companies) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -163,5 +265,13 @@ func sampleCompany(ownerID int64) companies.Company {
 		ID: 10, EventID: 3, Name: "Команда", MaxMembers: 5,
 		JoinType: companies.JoinTypeRequest, Owner: companies.UserShort{ID: ownerID, FirstName: "Иван"},
 		MembersCount: 1, Status: companies.StatusActive, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func sampleApplication(userID int64) companies.Application {
+	now := time.Date(2030, 1, 2, 12, 0, 0, 0, time.UTC)
+	return companies.Application{
+		ID: 20, CompanyID: 10, User: companies.UserShort{ID: userID, FirstName: "Иван"},
+		Status: companies.ApplicationStatusPending, CreatedAt: now,
 	}
 }
