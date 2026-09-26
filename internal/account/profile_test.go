@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type profileStoreStub struct {
@@ -52,6 +53,8 @@ func TestProfileServiceValidation(t *testing.T) {
 	}{
 		{"empty first name", ProfilePatch{FirstName: Change[string]{Set: true, Value: "  "}}, "firstName"},
 		{"invalid city", ProfilePatch{CityID: NullableChange[int64]{Set: true, Value: -1}}, "cityId"},
+		{"invalid gender", ProfilePatch{Gender: NullableChange[string]{Set: true, Value: "unknown"}}, "gender"},
+		{"future birth date", ProfilePatch{BirthDate: NullableChange[time.Time]{Set: true, Value: time.Now().AddDate(1, 0, 0)}}, "birthDate"},
 		{"duplicate interests", ProfilePatch{InterestIDs: Change[[]int64]{Set: true, Value: []int64{2, 2}}}, "interestIds"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

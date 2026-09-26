@@ -54,9 +54,13 @@ func TestProfileUpdateIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gender := "female"
+	birthDate := time.Date(2000, time.April, 15, 0, 0, 0, 0, time.UTC)
 	profile, err := service.Update(ctx, userID, account.ProfilePatch{
 		FirstName:   account.Change[string]{Set: true, Value: " Анна "},
 		LastName:    account.NullableChange[string]{Set: true, Value: "Иванова"},
+		Gender:      account.NullableChange[string]{Set: true, Value: gender},
+		BirthDate:   account.NullableChange[time.Time]{Set: true, Value: birthDate},
 		CityID:      account.NullableChange[int64]{Set: true, Value: cityID},
 		About:       account.NullableChange[string]{Set: true, Value: "О себе"},
 		InterestIDs: account.Change[[]int64]{Set: true, Value: []int64{secondInterestID, firstInterestID}},
@@ -64,7 +68,7 @@ func TestProfileUpdateIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.FirstName != "Анна" || profile.LastName == nil || *profile.LastName != "Иванова" || profile.City == nil || profile.City.ID != cityID || !profile.IsComplete() || len(profile.Interests) != 2 {
+	if profile.FirstName != "Анна" || profile.LastName == nil || *profile.LastName != "Иванова" || profile.Gender == nil || *profile.Gender != gender || profile.BirthDate == nil || !profile.BirthDate.Equal(birthDate) || profile.City == nil || profile.City.ID != cityID || !profile.IsComplete() || len(profile.Interests) != 2 {
 		t.Fatalf("unexpected updated profile: %+v", profile)
 	}
 
@@ -85,13 +89,15 @@ func TestProfileUpdateIntegration(t *testing.T) {
 		t.Fatalf("cleared interests must be []: %+v", profile.Interests)
 	}
 	profile, err = service.Update(ctx, userID, account.ProfilePatch{
-		LastName: account.NullableChange[string]{Set: true, Null: true},
-		About:    account.NullableChange[string]{Set: true, Null: true},
+		LastName:  account.NullableChange[string]{Set: true, Null: true},
+		Gender:    account.NullableChange[string]{Set: true, Null: true},
+		BirthDate: account.NullableChange[time.Time]{Set: true, Null: true},
+		About:     account.NullableChange[string]{Set: true, Null: true},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.LastName != nil || profile.About != nil {
+	if profile.LastName != nil || profile.Gender != nil || profile.BirthDate != nil || profile.About != nil {
 		t.Fatalf("nullable fields were not cleared: %+v", profile)
 	}
 }

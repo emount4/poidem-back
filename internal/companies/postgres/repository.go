@@ -16,6 +16,7 @@ import (
 
 const companyColumns = `
 	c.id, c.event_id, c.name, c.description, c.max_members, c.join_type, c.rules,
+	c.min_age, c.max_age,
 	u.id, u.first_name, u.last_name, u.avatar_url,
 	(SELECT count(*) FROM company_members members WHERE members.company_id = c.id),
 	c.status, c.created_at, c.updated_at`
@@ -100,11 +101,11 @@ func (r *Repository) Create(ctx context.Context, eventID, ownerID int64, input c
 		if err := db.QueryRow(txCtx, `
 			INSERT INTO companies (
 				event_id, owner_id, name, description, max_members, join_type,
-				rules, status, created_at, updated_at
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+				rules, min_age, max_age, status, created_at, updated_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)
 			RETURNING id
 		`, eventID, ownerID, input.Name, input.Description, input.MaxMembers,
-			input.JoinType, input.Rules, companies.StatusActive, now).Scan(&companyID); err != nil {
+			input.JoinType, input.Rules, input.MinAge, input.MaxAge, companies.StatusActive, now).Scan(&companyID); err != nil {
 			return fmt.Errorf("insert company: %w", err)
 		}
 		if _, err := db.Exec(txCtx, `
@@ -316,6 +317,18 @@ func (r *Repository) Update(ctx context.Context, companyID, ownerID int64, patch
 		if patch.MaxMembers.Set && int64(patch.MaxMembers.Value) < locked.MembersCount {
 			return companies.ErrCapacityBelowMembers
 		}
+		effectiveMinAge, effectiveMaxAge := locked.MinAge, locked.MaxAge
+		if patch.MinAge.Set {
+			effectiveMinAge = nullableIntPointer(patch.MinAge)
+		}
+		if patch.MaxAge.Set {
+			effectiveMaxAge = nullableIntPointer(patch.MaxAge)
+		}
+		if effectiveMinAge != nil && effectiveMaxAge != nil && *effectiveMinAge > *effectiveMaxAge {
+			return &companies.ValidationError{Fields: map[string][]string{
+				"maxAge": {"Максимальный возраст не может быть меньше минимального"},
+			}}
+		}
 		db := platformpostgres.Executor(txCtx, r.pool)
 		if _, err := db.Exec(txCtx, `
 			UPDATE companies SET
@@ -324,14 +337,18 @@ func (r *Repository) Update(ctx context.Context, companyID, ownerID int64, patch
 				max_members = CASE WHEN $6 THEN $7::integer ELSE max_members END,
 				join_type = CASE WHEN $8 THEN $9::varchar ELSE join_type END,
 				rules = CASE WHEN $10 THEN $11::text ELSE rules END,
-				updated_at = $12
+				min_age = CASE WHEN $12 THEN $13::integer ELSE min_age END,
+				max_age = CASE WHEN $14 THEN $15::integer ELSE max_age END,
+				updated_at = $16
 			WHERE id = $1
 		`, companyID,
 			patch.Name.Set, patch.Name.Value,
 			patch.Description.Set, nullableString(patch.Description),
 			patch.MaxMembers.Set, patch.MaxMembers.Value,
 			patch.JoinType.Set, patch.JoinType.Value,
-			patch.Rules.Set, nullableString(patch.Rules), now,
+			patch.Rules.Set, nullableString(patch.Rules),
+			patch.MinAge.Set, nullableInt(patch.MinAge),
+			patch.MaxAge.Set, nullableInt(patch.MaxAge), now,
 		); err != nil {
 			return fmt.Errorf("update company: %w", err)
 		}
@@ -436,11 +453,12 @@ func (r *Repository) JoinOpen(ctx context.Context, companyID, userID int64, now 
 
 		var companyStatus, joinType string
 		var maxMembers int64
+		var minAge, maxAge *int
 		err = db.QueryRow(txCtx, `
-			SELECT status, join_type, max_members FROM companies
+			SELECT status, join_type, max_members, min_age, max_age FROM companies
 			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
 			FOR UPDATE
-		`, companyID, eventID).Scan(&companyStatus, &joinType, &maxMembers)
+		`, companyID, eventID).Scan(&companyStatus, &joinType, &maxMembers, &minAge, &maxAge)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return companies.ErrNotFound
 		}
@@ -452,6 +470,9 @@ func (r *Repository) JoinOpen(ctx context.Context, companyID, userID int64, now 
 		}
 		if !eventAvailable(eventStatus, startsAt, endsAt, now) {
 			return companies.ErrEventNotAvailable
+		}
+		if err := ensureAgeEligible(txCtx, db, userID, minAge, maxAge, now); err != nil {
+			return err
 		}
 
 		var marker int
@@ -695,11 +716,12 @@ func (r *Repository) CreateApplication(ctx context.Context, companyID, userID in
 		}
 
 		var companyStatus, joinType string
+		var minAge, maxAge *int
 		err = db.QueryRow(txCtx, `
-			SELECT status, join_type FROM companies
+			SELECT status, join_type, min_age, max_age FROM companies
 			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
 			FOR UPDATE
-		`, companyID, eventID).Scan(&companyStatus, &joinType)
+		`, companyID, eventID).Scan(&companyStatus, &joinType, &minAge, &maxAge)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return companies.ErrNotFound
 		}
@@ -711,6 +733,9 @@ func (r *Repository) CreateApplication(ctx context.Context, companyID, userID in
 		}
 		if !eventAvailable(eventStatus, startsAt, endsAt, now) {
 			return companies.ErrEventNotAvailable
+		}
+		if err := ensureAgeEligible(txCtx, db, userID, minAge, maxAge, now); err != nil {
+			return err
 		}
 
 		var marker int
@@ -924,11 +949,12 @@ func (r *Repository) ResolveApplication(ctx context.Context, companyID, applicat
 		var actualOwnerID int64
 		var companyStatus string
 		var maxMembers int64
+		var minAge, maxAge *int
 		err = db.QueryRow(txCtx, `
-			SELECT owner_id, status, max_members FROM companies
+			SELECT owner_id, status, max_members, min_age, max_age FROM companies
 			WHERE id = $1 AND event_id = $2 AND deleted_at IS NULL
 			FOR UPDATE
-		`, companyID, eventID).Scan(&actualOwnerID, &companyStatus, &maxMembers)
+		`, companyID, eventID).Scan(&actualOwnerID, &companyStatus, &maxMembers, &minAge, &maxAge)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return companies.ErrNotFound
 		}
@@ -963,6 +989,11 @@ func (r *Repository) ResolveApplication(ctx context.Context, companyID, applicat
 		}
 		if applicantStatus != "active" {
 			return companies.ErrUserBanned
+		}
+		if action == "approve" {
+			if err := ensureAgeEligible(txCtx, db, applicantID, minAge, maxAge, now); err != nil {
+				return err
+			}
 		}
 
 		if action == "reject" {
@@ -1086,7 +1117,7 @@ type rowScanner interface{ Scan(...any) error }
 func scanCompany(row rowScanner) (companies.Company, error) {
 	var item companies.Company
 	err := row.Scan(&item.ID, &item.EventID, &item.Name, &item.Description,
-		&item.MaxMembers, &item.JoinType, &item.Rules, &item.Owner.ID,
+		&item.MaxMembers, &item.JoinType, &item.Rules, &item.MinAge, &item.MaxAge, &item.Owner.ID,
 		&item.Owner.FirstName, &item.Owner.LastName, &item.Owner.AvatarURL,
 		&item.MembersCount, &item.Status, &item.CreatedAt, &item.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1141,19 +1172,22 @@ type lockedCompany struct {
 	StartsAt      time.Time
 	EndsAt        *time.Time
 	MembersCount  int64
+	MinAge        *int
+	MaxAge        *int
 }
 
 func (r *Repository) lockCompany(ctx context.Context, companyID int64) (lockedCompany, error) {
 	var item lockedCompany
 	err := platformpostgres.Executor(ctx, r.pool).QueryRow(ctx, `
 		SELECT c.owner_id, c.status, e.status, e.starts_at, e.ends_at,
+			c.min_age, c.max_age,
 			(SELECT count(*) FROM company_members cm WHERE cm.company_id = c.id)
 		FROM companies c
 		JOIN events e ON e.id = c.event_id AND e.deleted_at IS NULL
 		WHERE c.id = $1 AND c.deleted_at IS NULL
 		FOR UPDATE OF c, e
 	`, companyID).Scan(&item.OwnerID, &item.CompanyStatus, &item.EventStatus,
-		&item.StartsAt, &item.EndsAt, &item.MembersCount)
+		&item.StartsAt, &item.EndsAt, &item.MinAge, &item.MaxAge, &item.MembersCount)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return lockedCompany{}, companies.ErrNotFound
 	}
@@ -1178,4 +1212,47 @@ func nullableString(change companies.NullableChange[string]) any {
 		return nil
 	}
 	return change.Value
+}
+
+func nullableInt(change companies.NullableChange[int]) any {
+	if change.Null {
+		return nil
+	}
+	return change.Value
+}
+
+func nullableIntPointer(change companies.NullableChange[int]) *int {
+	if change.Null {
+		return nil
+	}
+	value := change.Value
+	return &value
+}
+
+func ensureAgeEligible(ctx context.Context, db platformpostgres.DBTX, userID int64, minAge, maxAge *int, now time.Time) error {
+	if minAge == nil && maxAge == nil {
+		return nil
+	}
+	var birthDate *time.Time
+	if err := db.QueryRow(ctx, `SELECT birth_date FROM users WHERE id = $1 FOR KEY SHARE`, userID).Scan(&birthDate); errors.Is(err, pgx.ErrNoRows) {
+		return companies.ErrUserNotFound
+	} else if err != nil {
+		return fmt.Errorf("load user birth date: %w", err)
+	}
+	if birthDate == nil {
+		return companies.ErrAgeRestriction
+	}
+	age := ageAt(*birthDate, now)
+	if (minAge != nil && age < *minAge) || (maxAge != nil && age > *maxAge) {
+		return companies.ErrAgeRestriction
+	}
+	return nil
+}
+
+func ageAt(birthDate, at time.Time) int {
+	age := at.Year() - birthDate.Year()
+	if at.Month() < birthDate.Month() || (at.Month() == birthDate.Month() && at.Day() < birthDate.Day()) {
+		age--
+	}
+	return age
 }

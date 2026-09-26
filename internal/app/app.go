@@ -64,6 +64,10 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("configure OAuth login: %w", err)
 	}
+	credentialService, err := account.NewCredentialService(accountRepository, transactions, accessTokens, cfg.Auth.RefreshTTL)
+	if err != nil {
+		return fmt.Errorf("configure password credentials: %w", err)
+	}
 	authService := account.NewService(accessTokens, accountRepository)
 	profileService, err := account.NewProfileService(accountRepository, transactions)
 	if err != nil {
@@ -118,7 +122,7 @@ func Run(ctx context.Context, configPath string, log *slog.Logger) error {
 			PingDatabase: pool.Ping,
 			CORSOrigin:   cfg.OAuth.FrontendOrigin,
 			V1: v1.Dependencies{
-				Catalog: catalogService, Sessions: refreshService, SessionCookies: refreshCookies,
+				Catalog: catalogService, Sessions: refreshService, Credentials: credentialService, SessionCookies: refreshCookies,
 				Authenticator: authService, Profiles: profileService, Avatars: avatarService, Admin: adminService,
 				Events: eventService, Covers: coverService, Companies: companyService, Reports: reportService,
 				OAuth: accounthttp.OAuthRoutesConfig{

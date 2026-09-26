@@ -21,7 +21,7 @@ func (r *Repository) ListUsers(ctx context.Context, search string, page account.
 	}
 	rows, err := db.Query(ctx, `
 		SELECT u.id, u.first_name, u.last_name, u.avatar_url,
-		       c.id, c.name, c.slug, u.about,
+		       c.id, c.name, c.slug, u.about, u.gender, u.birth_date,
 		       COALESCE(u.role, 'user'), COALESCE(u.status, 'active'),
 		       COALESCE(u.created_at, u.updated_at, now())
 		FROM users u
@@ -41,7 +41,7 @@ func (r *Repository) ListUsers(ctx context.Context, search string, page account.
 		var cityName, citySlug *string
 		if err := rows.Scan(
 			&item.ID, &item.FirstName, &item.LastName, &item.AvatarURL,
-			&cityID, &cityName, &citySlug, &item.About,
+			&cityID, &cityName, &citySlug, &item.About, &item.Gender, &item.BirthDate,
 			&item.Role, &item.Status, &item.CreatedAt,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan admin user: %w", err)

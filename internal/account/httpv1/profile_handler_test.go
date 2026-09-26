@@ -50,8 +50,11 @@ func authenticatedRequest(method, target, body string) *http.Request {
 
 func TestGetProfileRoutesReturnSameUser(t *testing.T) {
 	slug := "moscow"
+	gender := "female"
+	birthDate := time.Date(2000, 4, 15, 0, 0, 0, 0, time.UTC)
 	profiles := &profilesStub{profile: account.Profile{
 		ID: 7, FirstName: "Анна", City: &account.DictionaryItem{ID: 1, Name: "Москва", Slug: &slug},
+		Gender: &gender, BirthDate: &birthDate,
 		Interests: []account.DictionaryItem{}, Role: account.RoleUser, Status: account.StatusActive,
 		CreatedAt: time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC),
 	}}
@@ -66,7 +69,7 @@ func TestGetProfileRoutesReturnSameUser(t *testing.T) {
 		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 			t.Fatal(err)
 		}
-		if body["id"] != float64(7) || body["isProfileComplete"] != true {
+		if body["id"] != float64(7) || body["isProfileComplete"] != true || body["gender"] != "female" || body["birthDate"] != "2000-04-15" {
 			t.Fatalf("unexpected profile: %v", body)
 		}
 		interests, ok := body["interests"].([]any)
@@ -76,17 +79,41 @@ func TestGetProfileRoutesReturnSameUser(t *testing.T) {
 	}
 }
 
+func TestGetPublicUserRequiresAuthAndReturnsSafeProfile(t *testing.T) {
+	profiles := &profilesStub{profile: account.Profile{
+		ID: 42, FirstName: "Иван", Interests: []account.DictionaryItem{},
+		Role: account.RoleUser, Status: account.StatusActive, CreatedAt: time.Now(),
+	}}
+	router := profileRouter(profiles)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, authenticatedRequest(http.MethodGet, "/api/v1/users/42", ""))
+	if response.Code != http.StatusOK || profiles.userID != 42 {
+		t.Fatalf("status=%d body=%s user=%d", response.Code, response.Body.String(), profiles.userID)
+	}
+	if strings.Contains(response.Body.String(), "username") || strings.Contains(response.Body.String(), "password") {
+		t.Fatalf("private credentials leaked: %s", response.Body.String())
+	}
+
+	unauthorized := httptest.NewRecorder()
+	router.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/api/v1/users/42", nil))
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+}
+
 func TestPatchProfilePreservesMissingAndNull(t *testing.T) {
 	profiles := &profilesStub{profile: account.Profile{ID: 7, FirstName: "Анна", Interests: []account.DictionaryItem{}}}
 	router := profileRouter(profiles)
 	response := httptest.NewRecorder()
-	router.ServeHTTP(response, authenticatedRequest(http.MethodPatch, "/api/v1/users/me", `{"lastName":null,"about":"О себе","interestIds":[]}`))
+	router.ServeHTTP(response, authenticatedRequest(http.MethodPatch, "/api/v1/users/me", `{"lastName":null,"about":"О себе","gender":"female","birthDate":"2000-04-15","interestIds":[]}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
 	}
 	patch := profiles.patch
 	if patch.FirstName.Set || !patch.LastName.Set || !patch.LastName.Null ||
 		!patch.About.Set || patch.About.Null || patch.About.Value != "О себе" ||
+		!patch.Gender.Set || patch.Gender.Value != "female" ||
+		!patch.BirthDate.Set || patch.BirthDate.Value.Format(time.DateOnly) != "2000-04-15" ||
 		!patch.InterestIDs.Set || patch.InterestIDs.Value == nil || len(patch.InterestIDs.Value) != 0 {
 		t.Fatalf("PATCH semantics lost: %+v", patch)
 	}
@@ -98,6 +125,7 @@ func TestPatchProfileValidation(t *testing.T) {
 	}{
 		{"null first name", `{"firstName":null}`, "firstName"},
 		{"null interests", `{"interestIds":null}`, "interestIds"},
+		{"invalid birth date", `{"birthDate":"15.04.2000"}`, "birthDate"},
 		{"unknown field", `{"unknown":1}`, "body"},
 		{"invalid JSON", `{`, "body"},
 	} {

@@ -28,6 +28,8 @@ type Profile struct {
 	AvatarURL *string
 	City      *DictionaryItem
 	About     *string
+	Gender    *string
+	BirthDate *time.Time
 	Interests []DictionaryItem
 	Role      string
 	Status    string
@@ -54,6 +56,8 @@ type ProfilePatch struct {
 	LastName    NullableChange[string]
 	CityID      NullableChange[int64]
 	About       NullableChange[string]
+	Gender      NullableChange[string]
+	BirthDate   NullableChange[time.Time]
 	InterestIDs Change[[]int64]
 }
 
@@ -127,6 +131,9 @@ func normalizeProfilePatch(patch *ProfilePatch) {
 	if patch.LastName.Set && !patch.LastName.Null {
 		patch.LastName.Value = strings.TrimSpace(patch.LastName.Value)
 	}
+	if patch.Gender.Set && !patch.Gender.Null {
+		patch.Gender.Value = strings.ToLower(strings.TrimSpace(patch.Gender.Value))
+	}
 }
 
 func validateProfilePatch(patch ProfilePatch) map[string][]string {
@@ -142,6 +149,16 @@ func validateProfilePatch(patch ProfilePatch) map[string][]string {
 	}
 	if patch.About.Set && !patch.About.Null && utf8.RuneCountInString(patch.About.Value) > 2000 {
 		fields["about"] = []string{"Максимальная длина — 2000 символов"}
+	}
+	if patch.Gender.Set && !patch.Gender.Null && patch.Gender.Value != "male" && patch.Gender.Value != "female" && patch.Gender.Value != "other" {
+		fields["gender"] = []string{"Допустимые значения: male, female, other"}
+	}
+	if patch.BirthDate.Set && !patch.BirthDate.Null {
+		today := time.Now().UTC()
+		today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.UTC)
+		if patch.BirthDate.Value.After(today) {
+			fields["birthDate"] = []string{"Дата рождения не может быть в будущем"}
+		}
 	}
 	if patch.InterestIDs.Set {
 		seen := make(map[int64]struct{}, len(patch.InterestIDs.Value))

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/emount4/poidem-back/internal/account"
@@ -27,7 +28,26 @@ func RegisterProfileRoutes(routes *gin.RouterGroup, profiles Profiles, authentic
 	protected.Use(RequireAuthentication(authenticator))
 	protected.GET("/auth/me", h.get)
 	protected.GET("/users/me", h.get)
+	protected.GET("/users/:userId", h.getPublic)
 	protected.PATCH("/users/me", h.update)
+}
+
+func (h profileHandler) getPublic(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("userId"), 10, 64)
+	if err != nil || userID <= 0 {
+		apierr.Write(c, http.StatusNotFound, "USER_NOT_FOUND", "Пользователь не найден", nil)
+		return
+	}
+	profile, err := h.profiles.Get(c.Request.Context(), userID)
+	if errors.Is(err, account.ErrUserNotFound) {
+		apierr.Write(c, http.StatusNotFound, "USER_NOT_FOUND", "Пользователь не найден", nil)
+		return
+	}
+	if err != nil {
+		apierr.WriteInternal(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, newProfileResponse(profile))
 }
 
 type profileHandler struct{ profiles Profiles }
@@ -99,6 +119,8 @@ type profilePatchRequest struct {
 	LastName    patchField[string]  `json:"lastName"`
 	CityID      patchField[int64]   `json:"cityId"`
 	About       patchField[string]  `json:"about"`
+	Gender      patchField[string]  `json:"gender"`
+	BirthDate   patchField[string]  `json:"birthDate"`
 	InterestIDs patchField[[]int64] `json:"interestIds"`
 }
 
@@ -120,15 +142,26 @@ func decodeProfilePatch(c *gin.Context) (profilePatchRequest, apierr.FieldErrors
 	if request.InterestIDs.Present && request.InterestIDs.Null {
 		fields["interestIds"] = []string{"Поле не может быть null"}
 	}
+	if request.BirthDate.Present && !request.BirthDate.Null {
+		if _, err := time.Parse(time.DateOnly, request.BirthDate.Value); err != nil {
+			fields["birthDate"] = []string{"Ожидается дата в формате YYYY-MM-DD"}
+		}
+	}
 	return request, fields
 }
 
 func (r profilePatchRequest) patch() account.ProfilePatch {
+	var birthDate time.Time
+	if r.BirthDate.Present && !r.BirthDate.Null {
+		birthDate, _ = time.Parse(time.DateOnly, r.BirthDate.Value)
+	}
 	return account.ProfilePatch{
 		FirstName:   account.Change[string]{Set: r.FirstName.Present, Value: r.FirstName.Value},
 		LastName:    account.NullableChange[string]{Set: r.LastName.Present, Null: r.LastName.Null, Value: r.LastName.Value},
 		CityID:      account.NullableChange[int64]{Set: r.CityID.Present, Null: r.CityID.Null, Value: r.CityID.Value},
 		About:       account.NullableChange[string]{Set: r.About.Present, Null: r.About.Null, Value: r.About.Value},
+		Gender:      account.NullableChange[string]{Set: r.Gender.Present, Null: r.Gender.Null, Value: r.Gender.Value},
+		BirthDate:   account.NullableChange[time.Time]{Set: r.BirthDate.Present, Null: r.BirthDate.Null, Value: birthDate},
 		InterestIDs: account.Change[[]int64]{Set: r.InterestIDs.Present, Value: r.InterestIDs.Value},
 	}
 }
@@ -146,6 +179,8 @@ type profileResponse struct {
 	AvatarURL         *string                  `json:"avatarUrl"`
 	City              *dictionaryItemResponse  `json:"city"`
 	About             *string                  `json:"about"`
+	Gender            *string                  `json:"gender"`
+	BirthDate         *string                  `json:"birthDate"`
 	Interests         []dictionaryItemResponse `json:"interests"`
 	Role              string                   `json:"role"`
 	Status            string                   `json:"status"`
@@ -157,8 +192,13 @@ func newProfileResponse(profile account.Profile) profileResponse {
 	response := profileResponse{
 		ID: profile.ID, FirstName: profile.FirstName, LastName: profile.LastName,
 		AvatarURL: profile.AvatarURL, About: profile.About, Role: profile.Role,
+		Gender: profile.Gender,
 		Status: profile.Status, IsProfileComplete: profile.IsComplete(), CreatedAt: profile.CreatedAt,
 		Interests: make([]dictionaryItemResponse, 0, len(profile.Interests)),
+	}
+	if profile.BirthDate != nil {
+		value := profile.BirthDate.Format(time.DateOnly)
+		response.BirthDate = &value
 	}
 	if profile.City != nil {
 		response.City = &dictionaryItemResponse{ID: profile.City.ID, Name: profile.City.Name, Slug: profile.City.Slug}

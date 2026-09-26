@@ -1,7 +1,7 @@
 # Контракт frontend ↔ backend
 
 Единый машиночитаемый контракт Poydem API v1 — [`api/openapi.yaml`](../api/openapi.yaml).
-Он содержит все 53 операции, стабильные `operationId`, схемы запросов и ответов,
+Он содержит все 60 операций, стабильные `operationId`, схемы запросов и ответов,
 security-схемы и точный mapping `HTTP status → error.code` в `x-error-codes`.
 
 Frontend генерирует типы и клиент только из этого файла. Документы
@@ -29,6 +29,8 @@ Frontend генерирует типы и клиент только из это�
 - Все пагинированные ответы имеют `{items, pagination}`. Для пустого результата
   `items=[]`, `total=0`, `totalPages=0`.
 - `X-Request-ID` из ответа сохраняется в диагностике ошибок.
+- `gender`, `birthDate`, `minAge` и `maxAge` присутствуют в соответствующих
+  response DTO всегда, но могут быть `null`; optional-поля используются в PATCH.
 
 ## OAuth URLs
 

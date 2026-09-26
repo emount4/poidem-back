@@ -120,7 +120,7 @@ func (authenticatorStub) Authenticate(_ context.Context, token string) (account.
 func TestCreateCompanyRequiresCompleteProfile(t *testing.T) {
 	service := &companiesStub{}
 	router := companyRouter(service)
-	body := `{"name":"Команда","maxMembers":5,"joinType":"request"}`
+	body := `{"name":"Команда","maxMembers":5,"joinType":"request","minAge":18,"maxAge":35}`
 
 	request := httptest.NewRequest(http.MethodPost, "/events/3/companies", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer incomplete")
@@ -136,7 +136,7 @@ func TestCreateCompanyRequiresCompleteProfile(t *testing.T) {
 	request.Header.Set("Content-Type", "application/json")
 	response = httptest.NewRecorder()
 	router.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated || service.eventID != 3 || service.ownerID != 7 || service.created.Name != "Команда" {
+	if response.Code != http.StatusCreated || service.eventID != 3 || service.ownerID != 7 || service.created.Name != "Команда" || service.created.MinAge == nil || *service.created.MinAge != 18 || service.created.MaxAge == nil || *service.created.MaxAge != 35 {
 		t.Fatalf("status=%d body=%s input=%#v", response.Code, response.Body.String(), service.created)
 	}
 	if !strings.Contains(response.Body.String(), `"membersCount":1`) {
@@ -179,7 +179,7 @@ func TestCreateCompanyMapsConflicts(t *testing.T) {
 func TestUpdateCompanyPreservesNullablePatchSemantics(t *testing.T) {
 	service := &companiesStub{}
 	router := companyRouter(service)
-	request := httptest.NewRequest(http.MethodPatch, "/companies/10", strings.NewReader(`{"description":null,"rules":"  Новые правила  "}`))
+	request := httptest.NewRequest(http.MethodPatch, "/companies/10", strings.NewReader(`{"description":null,"rules":"  Новые правила  ","minAge":null,"maxAge":40}`))
 	request.Header.Set("Authorization", "Bearer complete")
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -187,7 +187,7 @@ func TestUpdateCompanyPreservesNullablePatchSemantics(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if !service.patched.Description.Set || !service.patched.Description.Null || !service.patched.Rules.Set || service.patched.Rules.Value != "  Новые правила  " {
+	if !service.patched.Description.Set || !service.patched.Description.Null || !service.patched.Rules.Set || service.patched.Rules.Value != "  Новые правила  " || !service.patched.MinAge.Set || !service.patched.MinAge.Null || !service.patched.MaxAge.Set || service.patched.MaxAge.Value != 40 {
 		t.Fatalf("unexpected patch: %#v", service.patched)
 	}
 
@@ -219,6 +219,21 @@ func TestJoinOpenCompanyRequiresCompleteProfile(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated || service.joinedCompanyID != 10 || service.joinedUserID != 7 {
 		t.Fatalf("status=%d company=%d user=%d", response.Code, service.joinedCompanyID, service.joinedUserID)
+	}
+}
+
+func TestAgeRestrictionMapsToForbidden(t *testing.T) {
+	service := &companiesStub{err: companies.ErrAgeRestriction}
+	router := companyRouter(service)
+
+	for _, path := range []string{"/companies/10/join", "/companies/10/applications"} {
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		request.Header.Set("Authorization", "Bearer complete")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "AGE_RESTRICTION") {
+			t.Fatalf("path=%s status=%d body=%s", path, response.Code, response.Body.String())
+		}
 	}
 }
 

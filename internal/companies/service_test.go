@@ -101,15 +101,17 @@ func TestCreateNormalizesAndDelegates(t *testing.T) {
 
 func TestCreateValidatesAllCompanyFields(t *testing.T) {
 	tooLong := string(make([]rune, 2001))
+	minAge, maxAge := 50, 20
 	service := NewService(&storeStub{})
 	_, err := service.Create(context.Background(), 3, 7, CreateInput{
 		Name: "", Description: &tooLong, MaxMembers: 1, JoinType: "invite", Rules: &tooLong,
+		MinAge: &minAge, MaxAge: &maxAge,
 	})
 	validation, ok := err.(*ValidationError)
 	if !ok {
 		t.Fatalf("expected validation error, got %v", err)
 	}
-	for _, field := range []string{"name", "description", "maxMembers", "joinType", "rules"} {
+	for _, field := range []string{"name", "description", "maxMembers", "joinType", "rules", "maxAge"} {
 		if validation.Fields[field] == nil {
 			t.Fatalf("missing validation for %s: %#v", field, validation.Fields)
 		}
@@ -122,9 +124,11 @@ func TestUpdateValidatesPatch(t *testing.T) {
 		Name:       Change[string]{Set: true, Value: "  "},
 		MaxMembers: Change[int]{Set: true, Value: 101},
 		JoinType:   Change[string]{Set: true, Value: "private"},
+		MinAge:     NullableChange[int]{Set: true, Value: 13},
+		MaxAge:     NullableChange[int]{Set: true, Value: 101},
 	})
 	validation, ok := err.(*ValidationError)
-	if !ok || validation.Fields["name"] == nil || validation.Fields["maxMembers"] == nil || validation.Fields["joinType"] == nil {
+	if !ok || validation.Fields["name"] == nil || validation.Fields["maxMembers"] == nil || validation.Fields["joinType"] == nil || validation.Fields["minAge"] == nil || validation.Fields["maxAge"] == nil {
 		t.Fatalf("unexpected validation: %#v", err)
 	}
 }

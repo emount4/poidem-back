@@ -15,6 +15,7 @@ import (
 type Dependencies struct {
 	Catalog        cataloghttp.Catalog
 	Sessions       accounthttp.Sessions
+	Credentials    accounthttp.Credentials
 	SessionCookies accounthttp.CookieConfig
 	OAuth          accounthttp.OAuthRoutesConfig
 	Authenticator  accounthttp.Authenticator
@@ -35,6 +36,7 @@ func RegisterRoutes(routes *gin.RouterGroup, dependencies Dependencies) {
 	})
 	cataloghttp.RegisterRoutes(routes, dependencies.Catalog)
 	accounthttp.RegisterSessionRoutes(routes, dependencies.Sessions, dependencies.SessionCookies)
+	accounthttp.RegisterCredentialRoutes(routes, dependencies.Credentials, dependencies.SessionCookies)
 	accounthttp.RegisterOAuthRoutes(routes, dependencies.OAuth)
 	accounthttp.RegisterProfileRoutes(routes, dependencies.Profiles, dependencies.Authenticator)
 	accounthttp.RegisterAvatarRoutes(routes, dependencies.Avatars, dependencies.Authenticator)

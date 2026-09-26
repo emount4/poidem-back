@@ -64,7 +64,7 @@ func (r *Repository) Profile(ctx context.Context, userID int64) (account.Profile
 	var cityName, citySlug *string
 	err := db.QueryRow(ctx, `
 		SELECT u.id, u.first_name, u.last_name, u.avatar_url,
-		       c.id, c.name, c.slug, u.about,
+		       c.id, c.name, c.slug, u.about, u.gender, u.birth_date,
 		       COALESCE(u.role, 'user'), COALESCE(u.status, 'active'),
 		       COALESCE(u.created_at, u.updated_at, now())
 		FROM users u
@@ -72,7 +72,7 @@ func (r *Repository) Profile(ctx context.Context, userID int64) (account.Profile
 		WHERE u.id = $1
 	`, userID).Scan(
 		&profile.ID, &profile.FirstName, &profile.LastName, &profile.AvatarURL,
-		&cityID, &cityName, &citySlug, &profile.About,
+		&cityID, &cityName, &citySlug, &profile.About, &profile.Gender, &profile.BirthDate,
 		&profile.Role, &profile.Status, &profile.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -143,8 +143,8 @@ func (r *Repository) UpdateProfile(ctx context.Context, userID int64, patch acco
 			return err
 		}
 	}
-	if patch.FirstName.Set || patch.LastName.Set || patch.CityID.Set || patch.About.Set {
-		var lastName, cityID, about any
+	if patch.FirstName.Set || patch.LastName.Set || patch.CityID.Set || patch.About.Set || patch.Gender.Set || patch.BirthDate.Set {
+		var lastName, cityID, about, gender, birthDate any
 		if patch.LastName.Set && !patch.LastName.Null {
 			lastName = patch.LastName.Value
 		}
@@ -154,12 +154,20 @@ func (r *Repository) UpdateProfile(ctx context.Context, userID int64, patch acco
 		if patch.About.Set && !patch.About.Null {
 			about = patch.About.Value
 		}
+		if patch.Gender.Set && !patch.Gender.Null {
+			gender = patch.Gender.Value
+		}
+		if patch.BirthDate.Set && !patch.BirthDate.Null {
+			birthDate = patch.BirthDate.Value
+		}
 		_, err := db.Exec(ctx, `
 			UPDATE users
 			SET first_name = CASE WHEN $2 THEN $3::varchar ELSE first_name END,
 			    last_name = CASE WHEN $4 THEN $5::varchar ELSE last_name END,
 			    city_id = CASE WHEN $6 THEN $7::bigint ELSE city_id END,
 			    about = CASE WHEN $8 THEN $9::text ELSE about END,
+			    gender = CASE WHEN $10 THEN $11::varchar ELSE gender END,
+			    birth_date = CASE WHEN $12 THEN $13::date ELSE birth_date END,
 			    updated_at = now()
 			WHERE id = $1
 		`, userID,
@@ -167,6 +175,8 @@ func (r *Repository) UpdateProfile(ctx context.Context, userID int64, patch acco
 			patch.LastName.Set, lastName,
 			patch.CityID.Set, cityID,
 			patch.About.Set, about,
+			patch.Gender.Set, gender,
+			patch.BirthDate.Set, birthDate,
 		)
 		if err != nil {
 			return fmt.Errorf("update profile fields: %w", err)

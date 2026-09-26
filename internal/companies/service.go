@@ -28,6 +28,7 @@ var (
 	ErrApplicationAlreadyExists   = errors.New("application already exists")
 	ErrApplicationNotFound        = errors.New("application not found")
 	ErrApplicationAlreadyResolved = errors.New("application already resolved")
+	ErrAgeRestriction             = errors.New("age restriction")
 )
 
 type ValidationError struct{ Fields map[string][]string }
@@ -200,6 +201,7 @@ func validateInput(input CreateInput) map[string][]string {
 	if input.JoinType != JoinTypeOpen && input.JoinType != JoinTypeRequest {
 		fields["joinType"] = []string{"Допустимые значения: open, request"}
 	}
+	validateAgeRange(fields, input.MinAge, input.MaxAge)
 	return fields
 }
 
@@ -225,7 +227,28 @@ func validatePatch(patch Patch) map[string][]string {
 	if patch.JoinType.Set && patch.JoinType.Value != JoinTypeOpen && patch.JoinType.Value != JoinTypeRequest {
 		fields["joinType"] = []string{"Допустимые значения: open, request"}
 	}
+	if patch.MinAge.Set && !patch.MinAge.Null && (patch.MinAge.Value < 14 || patch.MinAge.Value > 100) {
+		fields["minAge"] = []string{"Значение должно быть от 14 до 100"}
+	}
+	if patch.MaxAge.Set && !patch.MaxAge.Null && (patch.MaxAge.Value < 14 || patch.MaxAge.Value > 100) {
+		fields["maxAge"] = []string{"Значение должно быть от 14 до 100"}
+	}
+	if patch.MinAge.Set && patch.MaxAge.Set && !patch.MinAge.Null && !patch.MaxAge.Null && patch.MinAge.Value > patch.MaxAge.Value {
+		fields["maxAge"] = []string{"Максимальный возраст не может быть меньше минимального"}
+	}
 	return fields
+}
+
+func validateAgeRange(fields map[string][]string, minAge, maxAge *int) {
+	if minAge != nil && (*minAge < 14 || *minAge > 100) {
+		fields["minAge"] = []string{"Значение должно быть от 14 до 100"}
+	}
+	if maxAge != nil && (*maxAge < 14 || *maxAge > 100) {
+		fields["maxAge"] = []string{"Значение должно быть от 14 до 100"}
+	}
+	if minAge != nil && maxAge != nil && *minAge > *maxAge {
+		fields["maxAge"] = []string{"Максимальный возраст не может быть меньше минимального"}
+	}
 }
 
 func validateOptional(fields map[string][]string, name string, value *string, maximum int) {

@@ -25,3 +25,8 @@ MinIO API доступен на `http://localhost:9000`, консоль — на
 ```sh
 docker compose up -d --build --wait
 ```
+
+Парольная регистрация и вход доступны через `POST /api/v1/auth/register` и
+`POST /api/v1/auth/login`. Оба запроса принимают `username` и `password`;
+успешный ответ содержит access JWT, а refresh-токен устанавливается только в
+HttpOnly cookie. После первого входа профиль заполняется через `PATCH /api/v1/users/me`.

@@ -64,6 +64,59 @@ paths:
           headers:
             Location: {description: Frontend auth callback or error URL, schema: {type: string, format: uri}}
             Set-Cookie: {description: On success sets refresh_token; always clears the one-time OAuth flow cookie, schema: {type: string}}
+  /auth/register:
+    post:
+      operationId: registerWithPassword
+      tags: [Auth]
+      security: []
+      summary: Register with username and password
+      x-error-codes:
+        '400': [VALIDATION_ERROR]
+        '409': [USERNAME_TAKEN]
+        '429': [RATE_LIMITED]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CredentialsInput'}
+      responses:
+        '201':
+          description: Registered; refresh token is set in an HttpOnly cookie
+          headers:
+            Set-Cookie: {description: HttpOnly refresh_token cookie, schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '429': {description: Registration rate limit exceeded, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+  /auth/login:
+    post:
+      operationId: loginWithPassword
+      tags: [Auth]
+      security: []
+      summary: Login with username and password
+      x-error-codes:
+        '401': [INVALID_CREDENTIALS]
+        '403': [USER_BANNED]
+        '429': [RATE_LIMITED]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CredentialsInput'}
+      responses:
+        '200':
+          description: Authenticated; refresh token is set in an HttpOnly cookie
+          headers:
+            Set-Cookie: {description: HttpOnly refresh_token cookie, schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AuthResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {description: Login rate limit exceeded, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   /auth/me:
     get:
       operationId: getCurrentUser
@@ -152,6 +205,26 @@ paths:
         '400': {$ref: '#/components/responses/BadRequest'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
+  /users/{userId}:
+    get:
+      operationId: getPublicUser
+      tags: [Users]
+      summary: Safe public profile for an authenticated user
+      description: Returns no username, password hash, sessions or provider identifiers.
+      x-error-codes:
+        '401': [UNAUTHORIZED]
+        '403': [USER_BANNED]
+        '404': [USER_NOT_FOUND]
+      parameters: [{$ref: '#/components/parameters/UserId'}]
+      responses:
+        '200':
+          description: Public profile
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
   /users/me/avatar:
     post:
       operationId: uploadMyAvatar
@@ -325,7 +398,7 @@ paths:
               type: object
               required: [file]
               properties:
-                file: {type: string, format: binary, description: JPEG, PNG or WebP up to 10 MiB}
+                file: {type: string, format: binary, description: "JPEG, PNG or WebP up to 10 MiB"}
       responses:
         '201':
           description: Temporary cover uploaded
@@ -681,7 +754,7 @@ paths:
       description: Atomically joins an open company and changes existing solo participation to company participation when needed.
       x-error-codes:
         '401': [UNAUTHORIZED]
-        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE, AGE_RESTRICTION]
         '404': [COMPANY_NOT_FOUND]
         '409': [COMPANY_FULL, COMPANY_CLOSED, EVENT_NOT_AVAILABLE, ALREADY_COMPANY_MEMBER, ALREADY_IN_EVENT_COMPANY]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
@@ -764,7 +837,7 @@ paths:
       x-error-codes:
         '400': [VALIDATION_ERROR]
         '401': [UNAUTHORIZED]
-        '403': [USER_BANNED, PROFILE_INCOMPLETE]
+        '403': [USER_BANNED, PROFILE_INCOMPLETE, AGE_RESTRICTION]
         '404': [COMPANY_NOT_FOUND]
         '409': [APPLICATION_ALREADY_EXISTS, COMPANY_CLOSED, EVENT_NOT_AVAILABLE, ALREADY_COMPANY_MEMBER, ALREADY_IN_EVENT_COMPANY]
       parameters: [{$ref: '#/components/parameters/CompanyId'}]
@@ -827,7 +900,7 @@ paths:
       description: Atomically approves the application, adds membership, and records company participation. Capacity and event/company state are checked again under locks.
       x-error-codes:
         '401': [UNAUTHORIZED]
-        '403': [USER_BANNED, NOT_COMPANY_OWNER]
+        '403': [USER_BANNED, NOT_COMPANY_OWNER, AGE_RESTRICTION]
         '404': [COMPANY_NOT_FOUND, APPLICATION_NOT_FOUND]
         '409': [APPLICATION_ALREADY_RESOLVED, COMPANY_FULL, COMPANY_BLOCKED, EVENT_NOT_AVAILABLE, ALREADY_COMPANY_MEMBER, ALREADY_IN_EVENT_COMPANY]
       parameters:
@@ -1297,13 +1370,15 @@ components:
       allOf:
         - {$ref: '#/components/schemas/UserShort'}
         - type: object
-          required: [city, about, interests, role, status, isProfileComplete, createdAt]
+          required: [city, about, gender, birthDate, interests, role, status, isProfileComplete, createdAt]
           properties:
             city:
               type: object
               nullable: true
               allOf: [{$ref: '#/components/schemas/DictionaryItem'}]
             about: {type: string, nullable: true}
+            gender: {type: string, enum: [male, female, other], nullable: true}
+            birthDate: {type: string, format: date, nullable: true}
             interests: {type: array, items: {$ref: '#/components/schemas/DictionaryItem'}}
             role: {$ref: '#/components/schemas/UserRole'}
             status: {$ref: '#/components/schemas/UserStatus'}
@@ -1326,7 +1401,23 @@ components:
         lastName: {type: string, maxLength: 100, nullable: true}
         cityId: {type: integer, format: int64, minimum: 1, nullable: true}
         about: {type: string, maxLength: 2000, nullable: true}
+        gender: {type: string, enum: [male, female, other], nullable: true}
+        birthDate: {type: string, format: date, nullable: true, description: Must not be in the future}
         interestIds: {type: array, uniqueItems: true, items: {type: integer, format: int64, minimum: 1}}
+    CredentialsInput:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: {type: string, minLength: 3, maxLength: 64, description: Unique case-insensitive username without whitespace}
+        password: {type: string, format: password, minLength: 8, maxLength: 72}
+    AuthResponse:
+      type: object
+      additionalProperties: false
+      required: [accessToken, user]
+      properties:
+        accessToken: {type: string, minLength: 1}
+        user: {$ref: '#/components/schemas/User'}
     EventStatus:
       type: string
       enum: [pending, active, rejected, blocked, completed]
@@ -1416,6 +1507,8 @@ components:
         maxMembers: {type: integer, minimum: 2, maximum: 100}
         joinType: {$ref: '#/components/schemas/JoinType'}
         rules: {type: string, maxLength: 2000, nullable: true}
+        minAge: {type: integer, minimum: 14, maximum: 100, nullable: true}
+        maxAge: {type: integer, minimum: 14, maximum: 100, nullable: true, description: Must be greater than or equal to minAge when both are present}
     JoinType:
       type: string
       enum: [open, request]
@@ -1429,11 +1522,13 @@ components:
         maxMembers: {type: integer, minimum: 2, maximum: 100}
         joinType: {$ref: '#/components/schemas/JoinType'}
         rules: {type: string, maxLength: 2000, nullable: true}
+        minAge: {type: integer, minimum: 14, maximum: 100, nullable: true}
+        maxAge: {type: integer, minimum: 14, maximum: 100, nullable: true}
     Company:
       allOf:
         - {$ref: '#/components/schemas/CompanyInput'}
         - type: object
-          required: [id, eventId, description, rules, owner, membersCount, status, createdAt, updatedAt]
+          required: [id, eventId, description, rules, minAge, maxAge, owner, membersCount, status, createdAt, updatedAt]
           properties:
             id: {type: integer, format: int64, minimum: 1}
             eventId: {type: integer, format: int64, minimum: 1}
@@ -1601,6 +1696,7 @@ components:
         - COMPANY_CLOSED
         - COMPANY_BLOCKED
         - COMPANY_CAPACITY_BELOW_MEMBERS
+        - AGE_RESTRICTION
         - NOT_COMPANY_OWNER
         - NOT_COMPANY_MEMBER
         - OWNER_CANNOT_LEAVE
@@ -1627,4 +1723,6 @@ components:
         - APPLICANT_BANNED
         - CANNOT_CHANGE_OWN_STATUS
         - CANNOT_BAN_ADMIN
+        - USERNAME_TAKEN
+        - INVALID_CREDENTIALS
 

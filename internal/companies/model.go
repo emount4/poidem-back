@@ -41,6 +41,8 @@ type Company struct {
 	MaxMembers   int
 	JoinType     string
 	Rules        *string
+	MinAge       *int
+	MaxAge       *int
 	Owner        UserShort
 	MembersCount int64
 	Status       string
@@ -54,6 +56,8 @@ type CreateInput struct {
 	MaxMembers  int
 	JoinType    string
 	Rules       *string
+	MinAge      *int
+	MaxAge      *int
 }
 
 type Application struct {
@@ -88,6 +92,8 @@ type Patch struct {
 	MaxMembers  Change[int]
 	JoinType    Change[string]
 	Rules       NullableChange[string]
+	MinAge      NullableChange[int]
+	MaxAge      NullableChange[int]
 }
 
 type Viewer struct {

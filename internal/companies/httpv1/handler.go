@@ -90,7 +90,7 @@ func (h handler) create(c *gin.Context) {
 	}
 	item, err := h.companies.Create(c.Request.Context(), eventID, principal.UserID, companies.CreateInput{
 		Name: request.Name, Description: request.Description, MaxMembers: request.MaxMembers,
-		JoinType: request.JoinType, Rules: request.Rules,
+		JoinType: request.JoinType, Rules: request.Rules, MinAge: request.MinAge, MaxAge: request.MaxAge,
 	})
 	if h.writeError(c, err) {
 		return
@@ -427,6 +427,8 @@ func (h handler) writeError(c *gin.Context, err error) bool {
 		apierr.Write(c, http.StatusNotFound, "APPLICATION_NOT_FOUND", "Заявка не найдена", nil)
 	case errors.Is(err, companies.ErrApplicationAlreadyResolved):
 		apierr.Write(c, http.StatusConflict, "APPLICATION_ALREADY_RESOLVED", "Заявка уже обработана", nil)
+	case errors.Is(err, companies.ErrAgeRestriction):
+		apierr.Write(c, http.StatusForbidden, "AGE_RESTRICTION", "Возраст пользователя не соответствует ограничениям компании", nil)
 	default:
 		apierr.WriteInternal(c, err)
 	}
@@ -439,6 +441,8 @@ type companyInputRequest struct {
 	MaxMembers  int     `json:"maxMembers"`
 	JoinType    string  `json:"joinType"`
 	Rules       *string `json:"rules"`
+	MinAge      *int    `json:"minAge"`
+	MaxAge      *int    `json:"maxAge"`
 }
 
 type applicationInputRequest struct {
@@ -466,6 +470,8 @@ type companyPatchRequest struct {
 	MaxMembers  patchField[int]    `json:"maxMembers"`
 	JoinType    patchField[string] `json:"joinType"`
 	Rules       patchField[string] `json:"rules"`
+	MinAge      patchField[int]    `json:"minAge"`
+	MaxAge      patchField[int]    `json:"maxAge"`
 }
 
 func (r companyPatchRequest) patch() (companies.Patch, apierr.FieldErrors) {
@@ -485,6 +491,8 @@ func (r companyPatchRequest) patch() (companies.Patch, apierr.FieldErrors) {
 		MaxMembers:  companies.Change[int]{Set: r.MaxMembers.Present, Value: r.MaxMembers.Value},
 		JoinType:    companies.Change[string]{Set: r.JoinType.Present, Value: r.JoinType.Value},
 		Rules:       companies.NullableChange[string]{Set: r.Rules.Present, Null: r.Rules.Null, Value: r.Rules.Value},
+		MinAge:      companies.NullableChange[int]{Set: r.MinAge.Present, Null: r.MinAge.Null, Value: r.MinAge.Value},
+		MaxAge:      companies.NullableChange[int]{Set: r.MaxAge.Present, Null: r.MaxAge.Null, Value: r.MaxAge.Value},
 	}, fields
 }
 
@@ -503,6 +511,8 @@ type companyResponse struct {
 	MaxMembers   int               `json:"maxMembers"`
 	JoinType     string            `json:"joinType"`
 	Rules        *string           `json:"rules"`
+	MinAge       *int              `json:"minAge"`
+	MaxAge       *int              `json:"maxAge"`
 	Owner        userShortResponse `json:"owner"`
 	MembersCount int64             `json:"membersCount"`
 	Status       string            `json:"status"`
@@ -529,6 +539,7 @@ func newCompanyResponse(item companies.Company) companyResponse {
 	return companyResponse{
 		ID: item.ID, EventID: item.EventID, Name: item.Name, Description: item.Description,
 		MaxMembers: item.MaxMembers, JoinType: item.JoinType, Rules: item.Rules,
+		MinAge: item.MinAge, MaxAge: item.MaxAge,
 		Owner: newUserShortResponse(item.Owner), MembersCount: item.MembersCount,
 		Status: item.Status, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
 	}

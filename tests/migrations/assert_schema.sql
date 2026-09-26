@@ -74,6 +74,37 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Missing avatar object key';
     END IF;
+    IF (SELECT count(*) FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'users'
+        AND column_name IN ('username', 'password_hash')) <> 2 THEN
+        RAISE EXCEPTION 'Missing password credential columns';
+    END IF;
+    IF (SELECT count(*) FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'users'
+        AND column_name IN ('gender', 'birth_date')) <> 2 THEN
+        RAISE EXCEPTION 'Missing profile demographic columns';
+    END IF;
+    IF (SELECT count(*) FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'companies'
+        AND column_name IN ('min_age', 'max_age')) <> 2 THEN
+        RAISE EXCEPTION 'Missing company age columns';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public'
+        AND indexname = 'uq_users_username_ci') THEN
+        RAISE EXCEPTION 'Missing case-insensitive username uniqueness';
+    END IF;
+    IF (SELECT count(*) FROM pg_constraint WHERE conname IN (
+        'chk_users_username_length', 'chk_users_username_normalized',
+        'chk_users_password_credentials_pair'
+    )) <> 3 THEN
+        RAISE EXCEPTION 'Missing password credential constraints';
+    END IF;
+    IF (SELECT count(*) FROM pg_constraint WHERE conname IN (
+        'chk_users_gender', 'chk_companies_min_age',
+        'chk_companies_max_age', 'chk_companies_age_range'
+    )) <> 4 THEN
+        RAISE EXCEPTION 'Missing profile/company age constraints';
+    END IF;
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema = 'public' AND table_name = 'events' AND column_name = 'deleted_at'
@@ -97,7 +128,9 @@ BEGIN
     IF (SELECT count(*) FROM event_categories WHERE slug IN ('music', 'sport')) <> 2 THEN
         RAISE EXCEPTION 'Event category seed is missing';
     END IF;
-    IF (SELECT count(*) FROM interests WHERE slug IN ('live-music', 'technology')) <> 2 THEN
+    IF (SELECT count(*) FROM interests WHERE slug IN (
+        'live-music', 'technology', 'psychology', 'science', 'walks', 'yoga-and-health'
+    )) <> 6 THEN
         RAISE EXCEPTION 'Interest seed is missing';
     END IF;
 END;
@@ -106,15 +139,19 @@ $$;
 INSERT INTO cities (id, name, slug) VALUES (900001, 'Test city', 'test-city');
 INSERT INTO interests (id, name, slug) VALUES (900001, 'Walking', 'walking');
 INSERT INTO event_categories (id, name, slug) VALUES (900001, 'Outdoors', 'outdoors');
-INSERT INTO users (id, first_name, city_id) VALUES (900001, 'Owner', 900001), (900002, 'Guest', 900001);
+INSERT INTO users (id, first_name, city_id, gender, birth_date)
+VALUES (900001, 'Owner', 900001, 'other', DATE '1990-01-01'),
+       (900002, 'Guest', 900001, 'female', DATE '2000-01-01');
+INSERT INTO users (id, first_name, username, password_hash)
+VALUES (900003, '', 'credential-user', '$2a$10$testhashplaceholder');
 INSERT INTO auth_accounts (user_id, provider, provider_user_id) VALUES (900001, 'test', 'external-1');
 INSERT INTO sessions (user_id, token_hash, expires_at)
 VALUES (900001, decode(repeat('ab', 32), 'hex'), now() + interval '30 days');
 INSERT INTO user_interests (user_id, interest_id) VALUES (900001, 900001);
 INSERT INTO events (id, creator_id, category_id, city_id, title, starts_at, location_name, status)
 VALUES (900001, 900001, 900001, 900001, 'Walk', now(), 'Park', 'active');
-INSERT INTO companies (id, event_id, owner_id, name, max_members, join_type, status)
-VALUES (900001, 900001, 900001, 'Group', 5, 'request', 'active');
+INSERT INTO companies (id, event_id, owner_id, name, max_members, join_type, min_age, max_age, status)
+VALUES (900001, 900001, 900001, 'Group', 5, 'request', 18, 40, 'active');
 INSERT INTO company_members (company_id, user_id, role) VALUES (900001, 900001, 'owner');
 INSERT INTO applications (company_id, user_id, message, status) VALUES (900001, 900002, 'Join?', 'pending');
 INSERT INTO event_participants (event_id, user_id, participation_type, company_id)
@@ -151,6 +188,18 @@ SELECT pg_temp.expect_sqlstate(
     '23505'
 );
 SELECT pg_temp.expect_sqlstate('INSERT INTO users (first_name) VALUES (NULL)', '23502');
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO users (first_name, username, password_hash) VALUES ('''', ''Credential-User'', ''hash'')',
+    '23514'
+);
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO users (first_name, username, password_hash) VALUES ('''', ''credential-user'', ''hash'')',
+    '23505'
+);
+SELECT pg_temp.expect_sqlstate(
+    'INSERT INTO users (first_name, username) VALUES ('''', ''missing-hash'')',
+    '23514'
+);
 SELECT pg_temp.expect_sqlstate('UPDATE events SET city_id = 999 WHERE id = 900001', '23503');
 SELECT pg_temp.expect_sqlstate('UPDATE event_participants SET company_id = 999 WHERE user_id = 900001', '23503');
 SELECT pg_temp.expect_sqlstate('DELETE FROM users WHERE id = 900001', '23503');
@@ -161,6 +210,10 @@ SELECT pg_temp.expect_sqlstate('UPDATE events SET location_source = ''invalid'' 
 SELECT pg_temp.expect_sqlstate('UPDATE companies SET status = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE companies SET join_type = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE companies SET max_members = 1', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE users SET gender = ''invalid'' WHERE id = 900001', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE companies SET min_age = 13 WHERE id = 900001', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE companies SET max_age = 101 WHERE id = 900001', '23514');
+SELECT pg_temp.expect_sqlstate('UPDATE companies SET min_age = 50, max_age = 20 WHERE id = 900001', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE company_members SET role = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate('UPDATE applications SET status = ''invalid''', '23514');
 SELECT pg_temp.expect_sqlstate(
